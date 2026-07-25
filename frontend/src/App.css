@@ -55,6 +55,47 @@
   animation: rise 0.7s var(--ease-out) 0.22s both;
 }
 
+/* ——— Nav ——— */
+
+.page-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 1.75rem;
+  animation: rise 0.55s var(--ease-out) both;
+}
+
+.nav-link {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--sans);
+  font-weight: 700;
+  font-size: 0.88rem;
+  letter-spacing: 0.02em;
+  padding: 0.45rem 0.85rem;
+  border-radius: 2px;
+  transition:
+    color 0.2s ease,
+    border-color 0.2s ease,
+    background 0.2s ease;
+}
+
+.nav-link:hover {
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+.nav-link.active {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.page > [hidden] {
+  display: none !important;
+}
+
 /* ——— Sections ——— */
 
 .panel {
@@ -101,7 +142,9 @@
 
 textarea,
 input[type='number'],
-.search {
+input[type='text'],
+.search,
+select {
   border: 1px solid var(--line);
   background: var(--panel-solid);
   color: var(--ink);
@@ -116,10 +159,33 @@ input[type='number'],
 
 textarea:focus,
 input:focus,
-.search:focus {
+.search:focus,
+select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
   background: #fff;
+}
+
+select {
+  font-family: var(--sans);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.85rem 0.9rem;
+}
+
+.check-col {
+  width: 2rem;
+  cursor: pointer;
+}
+
+.check-col input {
+  cursor: pointer;
+  accent-color: var(--accent);
 }
 
 textarea {

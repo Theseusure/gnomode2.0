@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
+import ScreenerPage from './ScreenerPage'
 
 type BuyerRow = {
   wallet: string
@@ -46,6 +47,7 @@ type JobResponse = {
 }
 
 type SortKey = 'mcap_at_first_buy' | 'bought_usd' | 'bought_tokens' | 'buys_count' | 'wallet'
+type AppPage = 'buyers' | 'screener'
 
 function shortAddr(a: string) {
   if (!a || a.length < 12) return a
@@ -102,8 +104,13 @@ function exportCsv(rows: BuyerRow[]) {
   URL.revokeObjectURL(url)
 }
 
-export default function App() {
-  const [input, setInput] = useState('')
+function EarlyBuyersPage({
+  input,
+  setInput,
+}: {
+  input: string
+  setInput: (v: string) => void
+}) {
   const [threshold, setThreshold] = useState(15000)
   const [job, setJob] = useState<JobResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -197,11 +204,10 @@ export default function App() {
   }
 
   const progress = job?.progress.percent ?? 0
-
   const sortDir = sortAsc ? '↑' : '↓'
 
   return (
-    <div className="page">
+    <>
       <header className="hero">
         <p className="brand">gnomode</p>
         <h1>Early buyers on Robinhood Chain</h1>
@@ -417,6 +423,45 @@ export default function App() {
       {job?.status === 'done' && allBuyers.length === 0 && !job.results.some((r) => r.error) && (
         <p className="empty">No early buyers found under ${fmtNum(threshold, 0)} mcap.</p>
       )}
+    </>
+  )
+}
+
+export default function App() {
+  const [page, setPage] = useState<AppPage>('buyers')
+  const [buyerInput, setBuyerInput] = useState('')
+
+  const useInBuyers = useCallback((addresses: string[]) => {
+    setBuyerInput(addresses.join('\n'))
+    setPage('buyers')
+  }, [])
+
+  return (
+    <div className="page">
+      <nav className="page-nav" aria-label="Main">
+        <button
+          type="button"
+          className={page === 'buyers' ? 'nav-link active' : 'nav-link'}
+          onClick={() => setPage('buyers')}
+        >
+          Early buyers
+        </button>
+        <button
+          type="button"
+          className={page === 'screener' ? 'nav-link active' : 'nav-link'}
+          onClick={() => setPage('screener')}
+        >
+          Screener
+        </button>
+      </nav>
+
+      {/* Keep both pages mounted so results survive tab switches */}
+      <div hidden={page !== 'buyers'}>
+        <EarlyBuyersPage input={buyerInput} setInput={setBuyerInput} />
+      </div>
+      <div hidden={page !== 'screener'}>
+        <ScreenerPage onUseInBuyers={useInBuyers} />
+      </div>
 
       <footer className="foot">
         Robinhood Chain · Uniswap V2/V3/V4 · public RPC by default

@@ -24,6 +24,14 @@ def _headers() -> dict[str, str]:
     return {}
 
 
+def blockscout_api_base() -> str:
+    return _base_url()
+
+
+def blockscout_headers() -> dict[str, str]:
+    return _headers()
+
+
 async def fetch_address_info(address: str) -> dict[str, Any] | None:
     url = f"{_base_url()}/addresses/{address}"
     try:

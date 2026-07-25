@@ -12,7 +12,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .jobs import jobs
-from .models import JobResponse, ParseRequest
+from .models import JobResponse, ParseRequest, ScreenJobResponse, ScreenRequest
+from .screen_jobs import screen_jobs
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,6 +67,19 @@ async def start_parse(req: ParseRequest):
 @app.get("/api/parse/{job_id}", response_model=JobResponse)
 async def get_parse(job_id: str):
     job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return job
+
+
+@app.post("/api/screen", response_model=ScreenJobResponse)
+async def start_screen(req: ScreenRequest):
+    return await screen_jobs.create(req)
+
+
+@app.get("/api/screen/{job_id}", response_model=ScreenJobResponse)
+async def get_screen(job_id: str):
+    job = screen_jobs.get(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
     return job

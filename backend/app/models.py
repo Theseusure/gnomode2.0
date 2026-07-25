@@ -71,3 +71,53 @@ class JobResponse(BaseModel):
     progress: JobProgress
     results: list[TokenParseResult] = Field(default_factory=list)
     error: str | None = None
+
+
+class ScreenSortBy(str, Enum):
+    liquidity = "liquidity"
+    market_cap = "market_cap"
+    traders = "traders"
+    pair_age = "pair_age"
+
+
+class ScreenSortOrder(str, Enum):
+    asc = "asc"
+    desc = "desc"
+
+
+class ScreenRequest(BaseModel):
+    min_liq: float | None = None
+    max_liq: float | None = None
+    min_mcap: float | None = None
+    max_mcap: float | None = None
+    min_traders: float | None = None
+    max_traders: float | None = None
+    min_pair_age_hours: float | None = None
+    max_pair_age_hours: float | None = None
+    sort_by: ScreenSortBy = ScreenSortBy.liquidity
+    sort_order: ScreenSortOrder = ScreenSortOrder.desc
+    max_results: int = Field(default=500, ge=1, le=2000)
+
+
+class ScreenedToken(BaseModel):
+    address: str
+    symbol: str = ""
+    name: str = ""
+    pair_address: str = ""
+    dex_id: str = ""
+    price_usd: float = 0.0
+    liquidity_usd: float = 0.0
+    market_cap: float = 0.0
+    traders_24h: int = 0
+    pair_created_at_ms: int | None = None
+    pair_age_hours: float | None = None
+    url: str = ""
+    gmgn_url: str = ""
+
+
+class ScreenJobResponse(BaseModel):
+    job_id: str
+    status: JobStatus
+    progress: JobProgress
+    results: list[ScreenedToken] = Field(default_factory=list)
+    error: str | None = None
