@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -12,8 +13,9 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .jobs import jobs
-from .models import JobResponse, ParseRequest, ScreenJobResponse, ScreenRequest
+from .models import IndexStatus, JobResponse, ParseRequest, ScreenJobResponse, ScreenRequest
 from .screen_jobs import screen_jobs
+from .token_index import token_index
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +31,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def _start_token_index() -> None:
+    # Background: cold-build the 24h token index, then keep it fresh.
+    asyncio.create_task(token_index.run_refresh_loop())
+
+
+@app.get("/api/index/status", response_model=IndexStatus)
+async def index_status():
+    return IndexStatus(**token_index.status())
+
+
+@app.post("/api/index/refresh", response_model=IndexStatus)
+async def index_refresh():
+    # Fire-and-forget incremental refresh (no-op if one is already running).
+    asyncio.create_task(token_index.refresh(full=False))
+    return IndexStatus(**token_index.status())
 
 
 @app.get("/api/health")

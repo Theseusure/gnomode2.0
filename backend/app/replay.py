@@ -668,7 +668,9 @@ async def _replay_v3(
     on_progress: ProgressCb,
 ) -> list[BuyerRow]:
     """Stream V3 swaps until mcap crosses threshold; record EOA buyers only."""
-    chunk = max(settings.log_chunk_size * 5, 50_000)
+    # Start with a modest window: the RPC caps ~10k logs/query and times out on
+    # very large ranges. Smaller windows avoid the slow Blockscout fallback.
+    chunk = min(max(settings.log_chunk_size, 40_000), 50_000)
     early_swaps: list[Any] = []
     stop_block = start_block
     crossed = False
@@ -691,8 +693,11 @@ async def _replay_v3(
             )
         except Exception as exc:  # noqa: BLE001
             msg = str(exc).lower()
-            if chunk > 5_000 and any(x in msg for x in ("limit", "range", "too large", "response")):
-                chunk = max(chunk // 2, 5_000)
+            if chunk > 2_000 and any(
+                x in msg
+                for x in ("limit", "range", "too large", "response", "timed out", "timeout", "query")
+            ):
+                chunk = max(chunk // 2, 2_000)
                 continue
             raise
 
@@ -815,7 +820,9 @@ async def _replay_v4(
 
     pool_id = pool.pool_id if pool.pool_id.startswith("0x") else f"0x{pool.pool_id}"
     manager = checksum(UNI_V4_POOL_MANAGER)
-    chunk = max(settings.log_chunk_size * 5, 50_000)
+    # Start with a modest window: the RPC caps ~10k logs/query and times out on
+    # very large ranges. Smaller windows avoid the slow Blockscout fallback.
+    chunk = min(max(settings.log_chunk_size, 40_000), 50_000)
 
     early_swaps: list[Any] = []
     stop_block = start_block
@@ -839,8 +846,11 @@ async def _replay_v4(
             )
         except Exception as exc:  # noqa: BLE001
             msg = str(exc).lower()
-            if chunk > 5_000 and any(x in msg for x in ("limit", "range", "too large", "response")):
-                chunk = max(chunk // 2, 5_000)
+            if chunk > 2_000 and any(
+                x in msg
+                for x in ("limit", "range", "too large", "response", "timed out", "timeout", "query")
+            ):
+                chunk = max(chunk // 2, 2_000)
                 continue
             raise
 

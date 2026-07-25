@@ -48,8 +48,16 @@ V3_SWAP_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcc
 V4_SWAP_TOPIC = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"
 # Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)
 V4_INITIALIZE_TOPIC = "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438"
-# PairCreated(address,address,address,uint256)
+# PairCreated(address,address,address,uint256) — Uniswap V2 factory (unused on RH)
 PAIR_CREATED_TOPIC = "0x0d3648bd0f6ba80129608ed38af698b6c228ce44bb9c8efe4d559091125be063"
+# PoolCreated(address,address,uint24,int24,address) — Uniswap V3 factory
+# token0 = topics[1], token1 = topics[2], pool = last 20 bytes of data
+V3_POOL_CREATED_TOPIC = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118"
+
+# Robinhood Chain runs ~10 blocks/sec (~0.1s/block). 24h ≈ 862k blocks.
+# Used as the discovery window for "new tokens in the last 24h".
+BLOCKS_PER_SECOND = 10
+WINDOW_24H_BLOCKS = 24 * 60 * 60 * BLOCKS_PER_SECOND  # 864_000
 
 ERC20_ABI = [
     {

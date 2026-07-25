@@ -33,6 +33,18 @@ type ScreenJobResponse = {
   error: string | null
 }
 
+type IndexStatus = {
+  tokens_24h: number
+  enriched: number
+  building: boolean
+  cold_started: boolean
+  refreshing: boolean
+  last_tip: number
+  last_scan_ts: number
+  last_refresh_ts: number
+  window_hours: number
+}
+
 type ScreenSortBy = 'liquidity' | 'market_cap' | 'traders' | 'pair_age'
 type ScreenSortOrder = 'asc' | 'desc'
 type TableSortKey =
@@ -87,6 +99,14 @@ function fmtAge(hours: number | null) {
   if (hours == null || !Number.isFinite(hours)) return '—'
   if (hours < 24) return `${fmtNum(hours, 1)}h`
   return `${fmtNum(hours / 24, 1)}d`
+}
+
+function fmtAgo(tsSeconds: number) {
+  if (!tsSeconds) return 'never'
+  const secs = Math.max(0, Date.now() / 1000 - tsSeconds)
+  if (secs < 60) return `${Math.round(secs)}s ago`
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`
+  return `${Math.round(secs / 3600)}h ago`
 }
 
 function parseOpt(raw: string): number | null {
@@ -152,12 +172,42 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
   const [sortKey, setSortKey] = useState<TableSortKey>('liquidity_usd')
   const [sortAsc, setSortAsc] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null)
 
   const setFilter = <K extends keyof Filters>(key: K, value: Filters[K]) => {
     setFilters((f) => ({ ...f, [key]: value }))
   }
 
   const keyOf = (addr: string) => addr.toLowerCase()
+
+  useEffect(() => {
+    let alive = true
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/index/status')
+        if (!res.ok) return
+        const data = (await res.json()) as IndexStatus
+        if (alive) setIndexStatus(data)
+      } catch {
+        /* ignore transient status errors */
+      }
+    }
+    poll()
+    const t = setInterval(poll, 5000)
+    return () => {
+      alive = false
+      clearInterval(t)
+    }
+  }, [])
+
+  const refreshIndex = useCallback(async () => {
+    try {
+      const res = await fetch('/api/index/refresh', { method: 'POST' })
+      if (res.ok) setIndexStatus((await res.json()) as IndexStatus)
+    } catch {
+      /* ignore */
+    }
+  }, [])
 
   useEffect(() => {
     if (!job || (job.status !== 'queued' && job.status !== 'running')) return
@@ -298,9 +348,39 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
         <p className="brand">gnomode</p>
         <h1>Token screener</h1>
         <p className="lede">
-          Scan Robinhood Chain tokens with liquidity, age, traders, and market-cap filters.
+          All new Robinhood Chain tokens from the last 24h (Uniswap V3/V4), with liquidity,
+          age, traders, and market-cap filters.
         </p>
       </header>
+
+      <section className="index-status">
+        <div className="index-status-meta">
+          {indexStatus ? (
+            indexStatus.building && !indexStatus.cold_started ? (
+              <span className="idx-build">Building 24h index… {fmtNum(indexStatus.enriched, 0)} tokens ready</span>
+            ) : (
+              <span>
+                <strong>{fmtNum(indexStatus.tokens_24h, 0)}</strong> new tokens (24h)
+                <span className="muted">
+                  {' '}· {fmtNum(indexStatus.enriched, 0)} enriched · updated{' '}
+                  {fmtAgo(indexStatus.last_refresh_ts)}
+                  {indexStatus.refreshing ? ' · refreshing…' : ''}
+                </span>
+              </span>
+            )
+          ) : (
+            <span className="muted">Loading index status…</span>
+          )}
+        </div>
+        <button
+          type="button"
+          className="ghost compact-btn"
+          onClick={refreshIndex}
+          disabled={!!indexStatus?.refreshing}
+        >
+          {indexStatus?.refreshing ? 'Refreshing…' : 'Refresh index'}
+        </button>
+      </section>
 
       <section className="panel input-panel">
         <div className="filter-grid">

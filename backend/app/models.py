@@ -125,3 +125,15 @@ class ScreenJobResponse(BaseModel):
     progress: JobProgress
     results: list[ScreenedToken] = Field(default_factory=list)
     error: str | None = None
+
+
+class IndexStatus(BaseModel):
+    tokens_24h: int = 0
+    enriched: int = 0
+    building: bool = False
+    cold_started: bool = False
+    refreshing: bool = False
+    last_tip: int = 0
+    last_scan_ts: float = 0.0
+    last_refresh_ts: float = 0.0
+    window_hours: int = 24

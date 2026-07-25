@@ -23,6 +23,13 @@ class JobStore:
     def get(self, job_id: str) -> JobResponse | None:
         return self._jobs.get(job_id)
 
+    def has_active(self) -> bool:
+        """True if any parse job is queued or running (used to yield resources)."""
+        return any(
+            j.status in (JobStatus.queued, JobStatus.running)
+            for j in self._jobs.values()
+        )
+
     async def create(self, req: ParseRequest) -> JobResponse:
         job_id = uuid.uuid4().hex[:12]
         job = JobResponse(

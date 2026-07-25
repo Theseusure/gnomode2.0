@@ -438,6 +438,32 @@ a.muted:hover {
   font-size: 0.82rem;
 }
 
+.index-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.25rem;
+  padding: 0.6rem 0.9rem;
+  background: var(--accent-soft);
+  border: 1px solid rgba(10, 122, 79, 0.18);
+  border-radius: 0.6rem;
+  font-size: 0.92rem;
+  animation: rise 0.5s var(--ease-out) 0.28s both;
+}
+
+.index-status-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.index-status .idx-build {
+  color: var(--accent, #0a7a4f);
+  font-weight: 600;
+}
+
 tbody tr {
   cursor: pointer;
 }
