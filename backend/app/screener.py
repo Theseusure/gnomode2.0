@@ -13,6 +13,7 @@ import httpx
 from .blockscout import blockscout_api_base, blockscout_headers
 from .constants import DEXSCREENER_API, QUOTE_TOKENS, ZERO
 from .models import ScreenedToken, ScreenRequest, ScreenSortBy, ScreenSortOrder
+from .security import assess_tokens_honeypot
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +166,9 @@ def _pair_to_screened(
     ds_url = str(pair.get("url") or f"https://dexscreener.com/{chain}/{pair_addr}")
 
     txns = (pair.get("txns") or {}).get("h24") or {}
-    traders = int(_f(txns.get("buys")) + _f(txns.get("sells")))
+    buys = int(_f(txns.get("buys")))
+    sells = int(_f(txns.get("sells")))
+    traders = buys + sells
 
     mcap = pair.get("marketCap")
     if mcap is None:
@@ -181,6 +184,8 @@ def _pair_to_screened(
         liquidity_usd=_f((pair.get("liquidity") or {}).get("usd")),
         market_cap=_f(mcap),
         traders_24h=traders,
+        buys_24h=buys,
+        sells_24h=sells,
         pair_created_at_ms=created_ms,
         pair_age_hours=age_h,
         url=ds_url,
@@ -283,6 +288,28 @@ async def _enrich_candidates(
     return merged
 
 
+async def _filter_honeypots(rows: list[ScreenedToken]) -> list[ScreenedToken]:
+    """Filter honeypots via GMGN security (not inside page timeouts)."""
+    if not rows:
+        return []
+    verdicts = await assess_tokens_honeypot(
+        [(r.address, r.buys_24h, r.sells_24h) for r in rows]
+    )
+    kept: list[ScreenedToken] = []
+    for row in rows:
+        reason = verdicts.get(row.address.lower())
+        if reason:
+            logger.info(
+                "Screener skip honeypot %s (%s): %s",
+                row.symbol or row.address[:10],
+                row.address[:12],
+                reason,
+            )
+            continue
+        kept.append(row)
+    return kept
+
+
 async def screen_tokens(
     req: ScreenRequest,
     on_progress: ProgressCb | None = None,
@@ -303,7 +330,12 @@ async def screen_tokens(
     page = 0
     next_params: dict[str, Any] | None = None
     max_pages = min(40, max(8, req.max_results // 10 + 6))
-    match_budget = min(req.max_results * 2, 1000)
+    # Stop as soon as we have enough matches. When excluding honeypots we
+    # over-fetch only a small buffer (honeypots are a minority) so the final
+    # list still fills max_results — never scan the whole catalog needlessly.
+    stop_target = req.max_results
+    if req.exclude_honeypots:
+        stop_target = min(int(req.max_results * 1.4) + 10, req.max_results + 200)
     consecutive_empty = 0
 
     async with httpx.AsyncClient(
@@ -373,12 +405,38 @@ async def screen_tokens(
             )
             await emit(list(matched.values()))
 
-            if len(matched) >= match_budget or len(matched) >= req.max_results:
+            if len(matched) >= stop_target:
                 break
             if not next_params:
                 break
 
-    rows_out = _sorted_rows(list(matched.values()), req)
+    pool = list(matched.values())
+    rows_out = _sorted_rows(pool, req)
+
+    if req.exclude_honeypots and pool:
+        # Never run security inside the 45s per-page enrich budget.
+        scan_n = min(len(pool), req.max_results + 200)
+        ranked = sorted(
+            pool,
+            key=lambda r: _sort_key(r, req.sort_by),
+            reverse=(req.sort_order == ScreenSortOrder.desc),
+        )[:scan_n]
+        await prog(
+            "security",
+            f"Honeypot check (GMGN) for {len(ranked)} tokens…",
+            0.88,
+        )
+        try:
+            checked = await asyncio.wait_for(
+                _filter_honeypots(ranked),
+                timeout=45.0,
+            )
+        except TimeoutError:
+            logger.warning("Honeypot filter timed out — keeping candidates without GMGN filter")
+            checked = ranked
+        rows_out = _sorted_rows(checked, req)
+        await emit(rows_out)
+
     await emit(rows_out)
     await prog("done", f"Done — {len(rows_out)} tokens", 1.0)
     return rows_out

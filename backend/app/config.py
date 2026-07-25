@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     # Larger chunks = fewer round-trips (filtered getLogs stay small)
     log_chunk_size: int = 100_000
     rpc_concurrency: int = 24
+    # Funded EOА used as eth_call `from` for honeypot buy→sell simulation
+    honeypot_sim_whale: str = ""
     host: str = "0.0.0.0"
     port: int = 8000
 

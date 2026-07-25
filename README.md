@@ -14,6 +14,9 @@
 - Сканирует каталог ERC-20 через Blockscout.
 - Обогащает метрики через DexScreener (`/tokens/v1/robinhood/...`).
 - Для каждого токена выбирает лучшую Robinhood-пару (по ликвидности).
+- Отсекает honeypot через **GMGN token security** (тот же источник, что на gmgn.ai):
+  `is_honeypot` / высокий buy·sell tax. Если GMGN не знает вердикт — лёгкий fallback
+  по DexScreener (нет продаж при покупках). Быстро: десятки токенов за несколько секунд.
 - Локальные фильтры (min/max, пустое поле = без ограничения):
   - **liquidity** — `liquidity.usd`
   - **pair age** — возраст пары в часах от `pairCreatedAt`
@@ -27,6 +30,7 @@
 ### Early buyers
 
 - Принимает один или несколько адресов токенов.
+- Перед тяжёлым replay проверяет honeypot через GMGN (можно отключить в UI).
 - Находит пулы Uniswap **V2 / V3 / V4** (DexScreener + on-chain factories для WETH/USDG).
 - Проигрывает историю свопов до пересечения порога mcap.
 - Собирает EOA-покупателей: объём в токенах, USD≈, mcap на первой покупке, число покупок.
@@ -98,6 +102,7 @@ PYTHONPATH=backend uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 
 | `MCAP_THRESHOLD` | `15000` | Порог mcap (USD) для Early buyers |
 | `LOG_CHUNK_SIZE` | `100000` | Размер блока для батча `eth_getLogs` |
 | `RPC_CONCURRENCY` | `24` | Параллелизм RPC-запросов |
+| `HONEYPOT_SIM_WHALE` | пусто | EOА с ≥0.05 ETH для eth_call симуляции honeypot; иначе auto |
 | `HOST` | `0.0.0.0` | Хост API |
 | `PORT` | `8000` | Порт API |
 
@@ -161,7 +166,8 @@ Content-Type: application/json
 
 {
   "tokens": ["0x…"],
-  "mcap_threshold": 15000
+  "mcap_threshold": 15000,
+  "exclude_honeypots": true
 }
 ```
 
@@ -187,6 +193,7 @@ Content-Type: application/json
   "max_traders": null,
   "min_pair_age_hours": 1,
   "max_pair_age_hours": 168,
+  "exclude_honeypots": true,
   "sort_by": "liquidity",
   "sort_order": "desc",
   "max_results": 500
@@ -202,6 +209,7 @@ Content-Type: application/json
 | `sort_by` | string | `liquidity` \| `market_cap` \| `traders` \| `pair_age` |
 | `sort_order` | string | `asc` \| `desc` |
 | `max_results` | int | 1–2000, по умолчанию 500 |
+| `exclude_honeypots` | bool | По умолчанию `true` — скрывать honeypot (GMGN) |
 
 ```http
 GET /api/screen/{job_id}
@@ -218,6 +226,10 @@ gnomode 2.0/
 ├── backend/app/
 │   ├── main.py          # FastAPI: /api/parse, /api/screen, /api/health
 │   ├── screener.py      # Screener: Blockscout + DexScreener + фильтры
+│   ├── gmgn.py          # GMGN token security (honeypot / tax)
+│   ├── goplus.py        # GoPlus checks (legacy fallback)
+│   ├── honeypot_sim.py  # On-chain buy→sell eth_call (optional / legacy)
+│   ├── security.py      # Combined honeypot gate (GMGN + Dex fallback)
 │   ├── screen_jobs.py   # In-memory jobs для screener
 │   ├── replay.py        # Replay свопов / early buyers
 │   ├── pools.py         # Поиск пулов DexScreener + factories

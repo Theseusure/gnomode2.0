@@ -385,6 +385,71 @@ a.muted:hover {
   animation: pop 0.45s var(--ease-spring) both;
 }
 
+.badge-warn {
+  color: #7a2e12;
+  background: rgba(180, 70, 24, 0.14);
+}
+
+.check-field {
+  max-width: none;
+}
+
+.check-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2.6rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+}
+
+.check-inline input {
+  accent-color: var(--accent);
+  width: 1rem;
+  height: 1rem;
+}
+
+.selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding: 0.85rem 0.95rem;
+  background: var(--accent-soft);
+  border: 1px solid rgba(10, 122, 79, 0.18);
+  animation: rise 0.4s var(--ease-out) both;
+}
+
+.selection-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+  font-size: 0.92rem;
+}
+
+.compact-btn {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.82rem;
+}
+
+tbody tr {
+  cursor: pointer;
+}
+
+tbody tr.row-selected {
+  background: rgba(10, 122, 79, 0.1);
+}
+
+tbody tr.row-selected:hover {
+  background: rgba(10, 122, 79, 0.16);
+}
+
 /* ——— Table ——— */
 
 .table-toolbar {
@@ -473,6 +538,42 @@ tbody tr:nth-child(n + 9) { animation-delay: 0.18s; }
 
 tbody tr:hover {
   background: var(--accent-soft);
+}
+
+tbody tr.row-visited {
+  background: var(--visited-soft);
+}
+
+tbody tr.row-visited:hover {
+  background: rgba(14, 116, 144, 0.18);
+}
+
+a.wallet-link {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+a.wallet-link:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+a.wallet-link.visited {
+  color: var(--visited);
+  font-weight: 700;
+  border-bottom-color: rgba(14, 116, 144, 0.35);
+}
+
+a.wallet-link.visited:hover {
+  color: var(--visited-ink);
+  border-bottom-color: var(--visited);
+}
+
+.visited-count {
+  color: var(--visited) !important;
+  font-weight: 600;
 }
 
 .empty {

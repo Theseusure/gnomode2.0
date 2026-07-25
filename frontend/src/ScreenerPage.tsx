@@ -10,6 +10,8 @@ type ScreenedToken = {
   liquidity_usd: number
   market_cap: number
   traders_24h: number
+  buys_24h?: number
+  sells_24h?: number
   pair_created_at_ms: number | null
   pair_age_hours: number | null
   url: string
@@ -53,6 +55,7 @@ type Filters = {
   sort_by: ScreenSortBy
   sort_order: ScreenSortOrder
   max_results: string
+  exclude_honeypots: boolean
 }
 
 const DEFAULT_FILTERS: Filters = {
@@ -67,6 +70,7 @@ const DEFAULT_FILTERS: Filters = {
   sort_by: 'liquidity',
   sort_order: 'desc',
   max_results: '500',
+  exclude_honeypots: true,
 }
 
 function shortAddr(a: string) {
@@ -153,6 +157,8 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
     setFilters((f) => ({ ...f, [key]: value }))
   }
 
+  const keyOf = (addr: string) => addr.toLowerCase()
+
   useEffect(() => {
     if (!job || (job.status !== 'queued' && job.status !== 'running')) return
     const id = job.job_id
@@ -195,6 +201,7 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
           sort_by: filters.sort_by,
           sort_order: filters.sort_order,
           max_results: maxResults ?? 500,
+          exclude_honeypots: filters.exclude_honeypots,
         }),
       })
       if (!res.ok) throw new Error(await res.text())
@@ -241,10 +248,11 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
   }
 
   const toggleSelect = (addr: string) => {
+    const key = keyOf(addr)
     setSelected((prev) => {
       const next = new Set(prev)
-      if (next.has(addr)) next.delete(addr)
-      else next.add(addr)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }
@@ -252,15 +260,34 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
   const toggleAllVisible = () => {
     setSelected((prev) => {
       const next = new Set(prev)
-      const allSelected = filtered.every((r) => next.has(r.address))
+      const allSelected = filtered.every((r) => next.has(keyOf(r.address)))
       if (allSelected) {
-        for (const r of filtered) next.delete(r.address)
+        for (const r of filtered) next.delete(keyOf(r.address))
       } else {
-        for (const r of filtered) next.add(r.address)
+        for (const r of filtered) next.add(keyOf(r.address))
       }
       return next
     })
   }
+
+  const clearSelection = () => setSelected(new Set())
+
+  const selectedOrdered = useMemo(() => {
+    const keys = selected
+    const fromRows = rows.filter((r) => keys.has(keyOf(r.address))).map((r) => r.address)
+    // preserve table order for visible first, then any leftover
+    const seen = new Set(fromRows.map(keyOf))
+    const extras = [...keys].filter((k) => !seen.has(k))
+    return [...fromRows, ...extras]
+  }, [rows, selected])
+
+  const sendToBuyers = () => {
+    if (!onUseInBuyers || selectedOrdered.length === 0) return
+    onUseInBuyers(selectedOrdered)
+  }
+
+  const allVisibleSelected =
+    filtered.length > 0 && filtered.every((r) => selected.has(keyOf(r.address)))
 
   const progress = job?.progress.percent ?? 0
   const sortDir = sortAsc ? '↑' : '↓'
@@ -389,6 +416,17 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
               onChange={(e) => setFilter('max_results', e.target.value)}
             />
           </label>
+          <label className="field check-field">
+            <span>Security</span>
+            <label className="check-inline">
+              <input
+                type="checkbox"
+                checked={filters.exclude_honeypots}
+                onChange={(e) => setFilter('exclude_honeypots', e.target.checked)}
+              />
+              Skip honeypots (GMGN)
+            </label>
+          </label>
         </div>
 
         <div className="row">
@@ -426,6 +464,33 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
 
       {rows.length > 0 && (
         <section className="panel table-panel">
+          <div className="selection-bar">
+            <div className="selection-meta">
+              <span>
+                Выбрано: <strong>{selected.size}</strong>
+                <span className="muted"> / {filtered.length} в таблице</span>
+              </span>
+              <button type="button" className="ghost compact-btn" onClick={toggleAllVisible}>
+                {allVisibleSelected ? 'Снять все' : 'Выбрать все'}
+              </button>
+              {selected.size > 0 && (
+                <button type="button" className="ghost compact-btn" onClick={clearSelection}>
+                  Очистить
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              className="primary"
+              disabled={!onUseInBuyers || selected.size === 0}
+              onClick={sendToBuyers}
+            >
+              {selected.size > 0
+                ? `В парсинг кошельков (${selected.size})`
+                : 'В парсинг кошельков'}
+            </button>
+          </div>
+
           <div className="table-toolbar">
             <input
               className="search"
@@ -436,15 +501,6 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
             />
             <div className="toolbar-right">
               <span className="muted">{filtered.length} tokens</span>
-              {selected.size > 0 && onUseInBuyers && (
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => onUseInBuyers([...selected])}
-                >
-                  Use in Early buyers ({selected.size})
-                </button>
-              )}
               <button type="button" className="ghost" onClick={() => exportCsv(filtered)}>
                 Export CSV
               </button>
@@ -457,7 +513,7 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
                   <th className="check-col">
                     <input
                       type="checkbox"
-                      checked={filtered.length > 0 && filtered.every((r) => selected.has(r.address))}
+                      checked={allVisibleSelected}
                       onChange={toggleAllVisible}
                       aria-label="Select all"
                     />
@@ -490,13 +546,14 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
                   >
                     Mcap
                   </th>
-                  <th
+                    <th
                     className={sortKey === 'traders_24h' ? 'active' : undefined}
                     data-dir={sortKey === 'traders_24h' ? sortDir : undefined}
                     onClick={() => toggleSort('traders_24h')}
                   >
                     Traders
                   </th>
+                  <th>B/S</th>
                   <th
                     className={sortKey === 'pair_age_hours' ? 'active' : undefined}
                     data-dir={sortKey === 'pair_age_hours' ? sortDir : undefined}
@@ -508,42 +565,61 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((r) => (
-                  <tr key={r.address}>
-                    <td className="check-col">
-                      <input
-                        type="checkbox"
-                        checked={selected.has(r.address)}
-                        onChange={() => toggleSelect(r.address)}
-                        aria-label={`Select ${r.symbol || r.address}`}
-                      />
-                    </td>
-                    <td>
-                      <a href={r.gmgn_url || `https://gmgn.ai/robinhood/token/${r.address}`} target="_blank" rel="noreferrer" title={r.address}>
-                        <strong>{r.symbol || shortAddr(r.address)}</strong>
-                      </a>
-                      <div className="mono muted">{shortAddr(r.address)}</div>
-                    </td>
-                    <td>${fmtNum(r.price_usd, 6)}</td>
-                    <td>${fmtNum(r.liquidity_usd, 0)}</td>
-                    <td>${fmtNum(r.market_cap, 0)}</td>
-                    <td>{fmtNum(r.traders_24h, 0)}</td>
-                    <td>{fmtAge(r.pair_age_hours)}</td>
-                    <td className="mono">
-                      {r.url && (
-                        <a href={r.url} target="_blank" rel="noreferrer">
-                          dex
+                {filtered.map((r) => {
+                  const isSelected = selected.has(keyOf(r.address))
+                  return (
+                    <tr
+                      key={r.address}
+                      className={isSelected ? 'row-selected' : undefined}
+                      onClick={(e) => {
+                        const target = e.target as HTMLElement
+                        if (target.closest('a, input, button')) return
+                        toggleSelect(r.address)
+                      }}
+                    >
+                      <td className="check-col">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelect(r.address)}
+                          aria-label={`Select ${r.symbol || r.address}`}
+                        />
+                      </td>
+                      <td>
+                        <a
+                          href={r.gmgn_url || `https://gmgn.ai/robinhood/token/${r.address}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={r.address}
+                        >
+                          <strong>{r.symbol || shortAddr(r.address)}</strong>
                         </a>
-                      )}
-                      {r.url && r.gmgn_url ? ' · ' : null}
-                      {r.gmgn_url && (
-                        <a href={r.gmgn_url} target="_blank" rel="noreferrer">
-                          gmgn
-                        </a>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                        <div className="mono muted">{shortAddr(r.address)}</div>
+                      </td>
+                      <td>${fmtNum(r.price_usd, 6)}</td>
+                      <td>${fmtNum(r.liquidity_usd, 0)}</td>
+                      <td>${fmtNum(r.market_cap, 0)}</td>
+                      <td>{fmtNum(r.traders_24h, 0)}</td>
+                      <td className="mono muted">
+                        {fmtNum(r.buys_24h ?? 0, 0)}/{fmtNum(r.sells_24h ?? 0, 0)}
+                      </td>
+                      <td>{fmtAge(r.pair_age_hours)}</td>
+                      <td className="mono">
+                        {r.url && (
+                          <a href={r.url} target="_blank" rel="noreferrer">
+                            dex
+                          </a>
+                        )}
+                        {r.url && r.gmgn_url ? ' · ' : null}
+                        {r.gmgn_url && (
+                          <a href={r.gmgn_url} target="_blank" rel="noreferrer">
+                            gmgn
+                          </a>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

@@ -33,6 +33,7 @@ from .constants import (
 )
 from .models import BuyerRow, PoolInfo, TokenParseResult
 from .pools import estimate_start_block, pick_best_pool
+from .security import honeypot_reason_for_token
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,8 @@ async def parse_token(
     token: str,
     mcap_threshold: float,
     on_progress: ProgressCb | None = None,
+    *,
+    exclude_honeypots: bool = True,
 ) -> TokenParseResult:
     async def prog(stage: str, message: str, percent: float) -> None:
         if on_progress:
@@ -190,6 +193,21 @@ async def parse_token(
 
     token = rpc.w3.to_checksum_address(token)
     await prog("meta", f"Loading token {token[:10]}…", 0.02)
+
+    if exclude_honeypots:
+        await prog("security", "Checking honeypot (GMGN)…", 0.03)
+        reason = await honeypot_reason_for_token(token)
+        if reason:
+            meta = await rpc.token_meta(token)
+            return TokenParseResult(
+                token=token,
+                symbol=meta.get("symbol") or "",
+                name=meta.get("name") or "",
+                decimals=int(meta.get("decimals") or 18),
+                total_supply=0.0,
+                error=f"Honeypot skipped ({reason})",
+                stats={"honeypot": True, "honeypot_reason": reason},
+            )
 
     # Parallel: token meta + pool discovery + ETH price + tip block
     meta_task = asyncio.create_task(rpc.token_meta(token))

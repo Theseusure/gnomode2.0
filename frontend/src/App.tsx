@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import ScreenerPage from './ScreenerPage'
+import { useVisitedGmgnWallets } from './useVisitedGmgnWallets'
 
 type BuyerRow = {
   wallet: string
@@ -112,11 +113,13 @@ function EarlyBuyersPage({
   setInput: (v: string) => void
 }) {
   const [threshold, setThreshold] = useState(15000)
+  const [excludeHoneypots, setExcludeHoneypots] = useState(true)
   const [job, setJob] = useState<JobResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('mcap_at_first_buy')
   const [sortAsc, setSortAsc] = useState(true)
+  const { markVisited, clearVisited, isVisited, visitedCount } = useVisitedGmgnWallets()
   const [busy, setBusy] = useState(false)
 
   const allBuyers = useMemo(() => {
@@ -184,7 +187,11 @@ function EarlyBuyersPage({
       const res = await fetch('/api/parse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tokens, mcap_threshold: threshold }),
+        body: JSON.stringify({
+          tokens,
+          mcap_threshold: threshold,
+          exclude_honeypots: excludeHoneypots,
+        }),
       })
       if (!res.ok) throw new Error(await res.text())
       const data = (await res.json()) as JobResponse
@@ -193,7 +200,7 @@ function EarlyBuyersPage({
       setError(e instanceof Error ? e.message : String(e))
       setBusy(false)
     }
-  }, [input, threshold])
+  }, [input, threshold, excludeHoneypots])
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortAsc((v) => !v)
@@ -238,6 +245,17 @@ function EarlyBuyersPage({
               onChange={(e) => setThreshold(Number(e.target.value) || 0)}
             />
           </label>
+          <label className="field check-field">
+            <span>Security</span>
+            <label className="check-inline">
+              <input
+                type="checkbox"
+                checked={excludeHoneypots}
+                onChange={(e) => setExcludeHoneypots(e.target.checked)}
+              />
+                Skip honeypots (GMGN)
+            </label>
+          </label>
           <button
             className={`primary${busy ? ' busy' : ''}`}
             disabled={busy}
@@ -276,6 +294,9 @@ function EarlyBuyersPage({
                 </a>
                 {!r.error && (
                   <span className="badge">{r.buyers.length} wallets</span>
+                )}
+                {r.error?.toLowerCase().includes('honeypot') && (
+                  <span className="badge badge-warn">honeypot</span>
                 )}
                 <a
                   className="mono muted"
@@ -324,6 +345,16 @@ function EarlyBuyersPage({
             />
             <div className="toolbar-right">
               <span className="muted">{filtered.length} wallets</span>
+              {visitedCount > 0 && (
+                <>
+                  <span className="muted visited-count" title="Opened on GMGN this browser">
+                    {visitedCount} viewed
+                  </span>
+                  <button type="button" className="ghost" onClick={clearVisited}>
+                    Clear viewed
+                  </button>
+                </>
+              )}
               <button type="button" className="ghost" onClick={() => exportCsv(filtered)}>
                 Export CSV
               </button>
@@ -373,14 +404,24 @@ function EarlyBuyersPage({
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((r) => (
-                  <tr key={`${r.token}-${r.wallet}-${r.first_tx}`}>
+                {filtered.map((r) => {
+                  const viewed = isVisited(r.wallet)
+                  return (
+                  <tr
+                    key={`${r.token}-${r.wallet}-${r.first_tx}`}
+                    className={viewed ? 'row-visited' : undefined}
+                  >
                     <td className="mono">
                       <a
                         href={gmgnWallet(r.wallet)}
                         target="_blank"
                         rel="noreferrer"
-                        title={r.wallet}
+                        title={viewed ? `${r.wallet} (viewed on GMGN)` : r.wallet}
+                        className={viewed ? 'wallet-link visited' : 'wallet-link'}
+                        onClick={() => markVisited(r.wallet)}
+                        onAuxClick={(e) => {
+                          if (e.button === 1) markVisited(r.wallet)
+                        }}
                       >
                         {shortAddr(r.wallet)}
                       </a>
@@ -413,7 +454,8 @@ function EarlyBuyersPage({
                       )}
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -434,6 +476,7 @@ export default function App() {
   const useInBuyers = useCallback((addresses: string[]) => {
     setBuyerInput(addresses.join('\n'))
     setPage('buyers')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [])
 
   return (

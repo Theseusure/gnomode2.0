@@ -77,7 +77,11 @@ class JobStore:
 
                 try:
                     result = await parse_token(
-                        rpc, token, threshold, on_progress=on_progress
+                        rpc,
+                        token,
+                        threshold,
+                        on_progress=on_progress,
+                        exclude_honeypots=req.exclude_honeypots,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Failed parsing %s", token)

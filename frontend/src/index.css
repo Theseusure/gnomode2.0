@@ -12,6 +12,9 @@
   --accent-soft: rgba(10, 122, 79, 0.12);
   --accent-ink: #063d28;
   --err: #b42318;
+  --visited: #0e7490;
+  --visited-soft: rgba(14, 116, 144, 0.12);
+  --visited-ink: #155e75;
   --mono: 'IBM Plex Mono', ui-monospace, monospace;
   --sans: 'Manrope', system-ui, sans-serif;
   --display: 'Syne', sans-serif;

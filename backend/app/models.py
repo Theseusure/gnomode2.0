@@ -18,6 +18,7 @@ class JobStatus(str, Enum):
 class ParseRequest(BaseModel):
     tokens: list[str] = Field(..., min_length=1)
     mcap_threshold: float | None = None
+    exclude_honeypots: bool = True
 
 
 class BuyerRow(BaseModel):
@@ -94,6 +95,7 @@ class ScreenRequest(BaseModel):
     max_traders: float | None = None
     min_pair_age_hours: float | None = None
     max_pair_age_hours: float | None = None
+    exclude_honeypots: bool = True
     sort_by: ScreenSortBy = ScreenSortBy.liquidity
     sort_order: ScreenSortOrder = ScreenSortOrder.desc
     max_results: int = Field(default=500, ge=1, le=2000)
@@ -109,6 +111,8 @@ class ScreenedToken(BaseModel):
     liquidity_usd: float = 0.0
     market_cap: float = 0.0
     traders_24h: int = 0
+    buys_24h: int = 0
+    sells_24h: int = 0
     pair_created_at_ms: int | None = None
     pair_age_hours: float | None = None
     url: str = ""

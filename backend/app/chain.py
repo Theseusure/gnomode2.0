@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 _http: httpx.AsyncClient | None = None
 
 
+class CallRevert(Exception):
+    """eth_call reverted; `.data` holds hex revert payload when available."""
+
+    def __init__(self, message: str, data: str | None = None):
+        super().__init__(message)
+        self.data = data
+
+
 def http_client() -> httpx.AsyncClient:
     global _http
     if _http is None or _http.is_closed:
@@ -344,6 +352,65 @@ class RpcClient:
                 if receipt:
                     out[h.lower()] = receipt
         return out
+
+    async def eth_call_raw(
+        self,
+        tx: dict[str, Any],
+        block: str = "latest",
+    ) -> str:
+        """Raw eth_call. On revert raises CallRevert with hex data when present."""
+
+        def _extract_revert_data(payload: Any) -> str | None:
+            if payload is None:
+                return None
+            if isinstance(payload, str):
+                if payload.startswith("0x") and len(payload) >= 2:
+                    return payload
+                # Sometimes error is a JSON string
+                try:
+                    import json
+
+                    return _extract_revert_data(json.loads(payload))
+                except Exception:  # noqa: BLE001
+                    return None
+            if isinstance(payload, dict):
+                for key in ("data", "result"):
+                    if key in payload:
+                        found = _extract_revert_data(payload[key])
+                        if found:
+                            return found
+                err = payload.get("error")
+                if err is not None:
+                    return _extract_revert_data(err)
+            return None
+
+        async def do_call():
+            async with self._sem:
+                r = await http_client().post(
+                    self.rpc_url,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "eth_call",
+                        "params": [tx, block],
+                    },
+                )
+                r.raise_for_status()
+                return r.json()
+
+        data = await self._call(do_call)
+        if isinstance(data, dict) and "error" in data:
+            err = data["error"]
+            msg = str(err.get("message") if isinstance(err, dict) else err)
+            revert = _extract_revert_data(err)
+            if revert is None:
+                # web3-style: error.data may be nested
+                revert = _extract_revert_data(data)
+            raise CallRevert(msg, revert)
+        result = data.get("result") if isinstance(data, dict) else None
+        if not isinstance(result, str):
+            raise CallRevert("empty eth_call result", None)
+        return result
 
 
 def topic_address(topic: str | bytes) -> str:
