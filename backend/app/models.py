@@ -131,6 +131,8 @@ class ScreenedToken(BaseModel):
     price_usd: float = 0.0
     liquidity_usd: float = 0.0
     market_cap: float = 0.0
+    # Peak market cap observed while the token is in the 24h index / hold queue.
+    ath_mcap: float = 0.0
     traders_24h: int = 0
     buys_24h: int = 0
     sells_24h: int = 0
@@ -165,6 +167,9 @@ class WatchScreenFilters(BaseModel):
     max_liq: float | None = None
     min_mcap: float | None = None
     max_mcap: float | None = None
+    # Autoparse wallet extraction only after tracked ATH ≥ this (USD).
+    # None or 0 disables the gate (parse every screened token each cycle).
+    min_ath_mcap: float | None = 50_000.0
     min_traders: float | None = None
     max_traders: float | None = None
     min_pair_age_hours: float | None = None
@@ -210,11 +215,15 @@ class WatchStatus(BaseModel):
     last_message: str = ""
     last_tokens_screened: int = 0
     last_tokens_parsed: int = 0
+    last_tokens_held: int = 0
+    last_tokens_qualified: int = 0
     last_buyers_found: int = 0
     last_buyers_new: int = 0
     last_buyers_sent: int = 0
     last_buyers_skipped: int = 0
     seen_count: int = 0
+    hold_count: int = 0
+    parsed_token_count: int = 0
     # Catch-up after downtime (before regular interval cycles)
     needs_catchup: bool = False
     catchup_lookback_hours: float | None = None

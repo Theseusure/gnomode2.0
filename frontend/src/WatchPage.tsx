@@ -9,6 +9,7 @@ type ScreenFiltersForm = {
   max_liq: string
   min_mcap: string
   max_mcap: string
+  min_ath_mcap: string
   min_traders: string
   max_traders: string
   min_pair_age_hours: string
@@ -42,6 +43,7 @@ type WatchConfig = {
     max_liq: number | null
     min_mcap: number | null
     max_mcap: number | null
+    min_ath_mcap?: number | null
     min_traders: number | null
     max_traders: number | null
     min_pair_age_hours: number | null
@@ -82,11 +84,15 @@ type WatchStatus = {
   last_message: string
   last_tokens_screened: number
   last_tokens_parsed: number
+  last_tokens_held?: number
+  last_tokens_qualified?: number
   last_buyers_found: number
   last_buyers_new: number
   last_buyers_sent: number
   last_buyers_skipped: number
   seen_count: number
+  hold_count?: number
+  parsed_token_count?: number
   needs_catchup?: boolean
   catchup_lookback_hours?: number | null
   is_catchup_run?: boolean
@@ -131,6 +137,7 @@ const DEFAULT_SCREEN: ScreenFiltersForm = {
   max_liq: '',
   min_mcap: '',
   max_mcap: '',
+  min_ath_mcap: '50000',
   min_traders: '',
   max_traders: '',
   min_pair_age_hours: '',
@@ -207,6 +214,10 @@ function configToForms(cfg: WatchConfig): {
       max_liq: numToStr(cfg.screen.max_liq),
       min_mcap: numToStr(cfg.screen.min_mcap),
       max_mcap: numToStr(cfg.screen.max_mcap),
+      min_ath_mcap:
+        cfg.screen.min_ath_mcap === undefined
+          ? '50000'
+          : numToStr(cfg.screen.min_ath_mcap),
       min_traders: numToStr(cfg.screen.min_traders),
       max_traders: numToStr(cfg.screen.max_traders),
       min_pair_age_hours: numToStr(cfg.screen.min_pair_age_hours),
@@ -304,6 +315,7 @@ export default function WatchPage() {
         max_liq: parseOpt(screen.max_liq),
         min_mcap: parseOpt(screen.min_mcap),
         max_mcap: parseOpt(screen.max_mcap),
+        min_ath_mcap: parseOpt(screen.min_ath_mcap),
         min_traders: parseOpt(screen.min_traders),
         max_traders: parseOpt(screen.max_traders),
         min_pair_age_hours: parseOpt(screen.min_pair_age_hours),
@@ -479,8 +491,8 @@ export default function WatchPage() {
         <p className="brand">gnomode</p>
         <h1>Автопарс и алерты в Telegram</h1>
         <p className="lede">
-          По расписанию скринит токены, парсит ранних покупателей по фильтрам кошельков и
-          отправляет новые пары кошелёк+токен в Telegram.
+          По расписанию скринит токены, паркует ранние в hold до ATH mcap, затем парсит
+          ранних покупателей по фильтрам кошельков и шлёт новые пары кошелёк+токен в Telegram.
         </p>
       </header>
 
@@ -511,6 +523,18 @@ export default function WatchPage() {
               {status
                 ? `${status.last_tokens_parsed} ток · ${status.last_buyers_sent} отпр. · ${status.last_buyers_skipped} проп.`
                 : '—'}
+            </strong>
+            {status ? (
+              <div className="muted tiny">
+                qualify {status.last_tokens_qualified ?? 0} · hold цикл{' '}
+                {status.last_tokens_held ?? 0}
+              </div>
+            ) : null}
+          </div>
+          <div>
+            <span className="muted">Hold / спарсено</span>
+            <strong>
+              {status?.hold_count ?? 0} / {status?.parsed_token_count ?? 0}
             </strong>
           </div>
           <div>
@@ -695,6 +719,17 @@ export default function WatchPage() {
           <label className="field">
             <span>Макс. mcap ($)</span>
             <input type="number" min={0} value={screen.max_mcap} onChange={(e) => setScreenField('max_mcap', e.target.value)} placeholder="любая" />
+          </label>
+          <label className="field">
+            <span>Мин. ATH mcap ($)</span>
+            <input
+              type="number"
+              min={0}
+              value={screen.min_ath_mcap}
+              onChange={(e) => setScreenField('min_ath_mcap', e.target.value)}
+              placeholder="выкл"
+              title="Парсить кошельки только после ATH ≥ порога. Пусто = гейт выключен."
+            />
           </label>
           <label className="field">
             <span>Мин. трейдеров (24ч)</span>

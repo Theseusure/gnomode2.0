@@ -14,6 +14,7 @@ def test_watch_config_defaults():
     assert cfg.interval_sec == 900
     assert cfg.max_tokens_per_cycle == 20
     assert cfg.screen.exclude_honeypots is True
+    assert cfg.screen.min_ath_mcap == 50_000.0
 
 
 def test_watch_config_interval_bounds():

@@ -81,6 +81,8 @@ class TokenEntry:
     screened: ScreenedToken | None = None
     enriched_at: float = 0.0
     first_seen: float = field(default_factory=time.time)
+    # Peak DexScreener market_cap seen while this entry is alive in the index.
+    ath_mcap: float = 0.0
 
 
 class TokenIndex:
@@ -160,8 +162,17 @@ class TokenIndex:
             address=entry.address,
             dex_id=entry.dex,
             pair_age_hours=age_h,
+            ath_mcap=entry.ath_mcap,
             gmgn_url=f"https://gmgn.ai/robinhood/token/{entry.address}",
         )
+
+    def _apply_ath(self, entry: TokenEntry, row: ScreenedToken) -> ScreenedToken:
+        """Bump entry ATH from current mcap and mirror it onto the screened row."""
+        peak = max(entry.ath_mcap, row.ath_mcap, row.market_cap)
+        entry.ath_mcap = peak
+        if row.ath_mcap != peak:
+            return row.model_copy(update={"ath_mcap": peak})
+        return row
 
     def _prune(self) -> None:
         if not self.last_tip:
@@ -326,9 +337,13 @@ class TokenIndex:
                 key = entry.address.lower()
                 best = _best_pair_for_token(entry.address, by_token.get(key, []))
                 if best:
-                    entry.screened = _pair_to_screened(entry.address, {}, best)
+                    row = _pair_to_screened(entry.address, {}, best)
+                    entry.screened = self._apply_ath(entry, row)
                 elif entry.screened is None:
-                    entry.screened = self._minimal(entry)
+                    entry.screened = self._apply_ath(entry, self._minimal(entry))
+                else:
+                    # Stale refresh missed DexScreener — keep row, still sync ath field.
+                    entry.screened = self._apply_ath(entry, entry.screened)
                 entry.enriched_at = stamp
             done += 1
             if on_progress and (done == total or done % 5 == 0):
@@ -339,6 +354,76 @@ class TokenIndex:
                 )
 
         await asyncio.gather(*(run_batch(b) for b in batches))
+
+    async def force_enrich_addresses(
+        self,
+        addresses: list[str],
+        *,
+        on_progress: ProgressCb | None = None,
+    ) -> dict[str, ScreenedToken]:
+        """Force DexScreener refresh for addresses, ignoring enrich TTL.
+
+        In-index entries are updated in place (ATH peaks preserved). Addresses
+        missing from the 24h index are still fetched and returned so callers
+        (watch catch-up) can bump ATH hold peaks without re-adding stale tokens.
+        """
+        from .screener import _best_pair_for_token, _fetch_dex_pairs, _pair_to_screened
+
+        keys = sorted({a.strip().lower() for a in addresses if a and str(a).strip()})
+        if not keys:
+            return {}
+
+        batches = [
+            keys[i : i + _ENRICH_BATCH] for i in range(0, len(keys), _ENRICH_BATCH)
+        ]
+        sem = asyncio.Semaphore(_ENRICH_CONCURRENCY)
+        client = self._http_client()
+        total = len(batches)
+        done = 0
+        out: dict[str, ScreenedToken] = {}
+
+        async def run_batch(batch: list[str]) -> None:
+            nonlocal done
+            async with sem:
+                pairs = await _fetch_dex_pairs(client, batch)
+            by_token: dict[str, list[dict[str, Any]]] = {a: [] for a in batch}
+            for p in pairs:
+                for side in ("baseToken", "quoteToken"):
+                    a = str((p.get(side) or {}).get("address") or "").lower()
+                    if a in by_token:
+                        by_token[a].append(p)
+            stamp = time.time()
+            for addr in batch:
+                entry = self._tokens.get(addr)
+                best = _best_pair_for_token(
+                    entry.address if entry else addr, by_token.get(addr, [])
+                )
+                if entry is not None:
+                    if best:
+                        row = _pair_to_screened(entry.address, {}, best)
+                        entry.screened = self._apply_ath(entry, row)
+                    elif entry.screened is None:
+                        entry.screened = self._apply_ath(entry, self._minimal(entry))
+                    else:
+                        entry.screened = self._apply_ath(entry, entry.screened)
+                    entry.enriched_at = stamp
+                    out[addr] = entry.screened
+                elif best:
+                    row = _pair_to_screened(addr, {}, best)
+                    peak = max(row.ath_mcap, row.market_cap)
+                    if row.ath_mcap != peak:
+                        row = row.model_copy(update={"ath_mcap": peak})
+                    out[addr] = row
+            done += 1
+            if on_progress and (done == total or done % 5 == 0):
+                await on_progress(
+                    "enrich",
+                    f"Catch-up hold enrich {done}/{total} batches…",
+                    min(0.95, 0.1 + 0.85 * done / max(total, 1)),
+                )
+
+        await asyncio.gather(*(run_batch(b) for b in batches))
+        return out
 
     # -------------------------------------------------------------- refresh
 
@@ -406,7 +491,23 @@ class TokenIndex:
     # ---------------------------------------------------------------- reads
 
     def get_tokens(self) -> list[ScreenedToken]:
-        return [e.screened for e in self._tokens.values() if e.screened is not None]
+        out: list[ScreenedToken] = []
+        for e in self._tokens.values():
+            if e.screened is None:
+                continue
+            e.screened = self._apply_ath(e, e.screened)
+            out.append(e.screened)
+        return out
+
+    def get_token(self, address: str) -> ScreenedToken | None:
+        entry = self._tokens.get(address.lower())
+        if entry is None or entry.screened is None:
+            return None
+        entry.screened = self._apply_ath(entry, entry.screened)
+        return entry.screened
+
+    def known_addresses(self) -> set[str]:
+        return set(self._tokens.keys())
 
     def status(self) -> dict[str, Any]:
         enriched = sum(1 for e in self._tokens.values() if e.screened is not None)

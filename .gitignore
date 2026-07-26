@@ -13,6 +13,7 @@ __pycache__/
 backend/app/data/watch.json
 backend/app/data/watch_seen.json
 backend/app/data/watch_state.json
+backend/app/data/watch_hold.json
 
 # Node
 frontend/node_modules/

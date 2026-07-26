@@ -16,8 +16,10 @@ if str(_BACKEND_ROOT) not in sys.path:
 def tmp_watch_paths(tmp_path, monkeypatch):
     config_path = tmp_path / "watch.json"
     seen_path = tmp_path / "watch_seen.json"
+    hold_path = tmp_path / "watch_hold.json"
     from app.config import settings
 
     monkeypatch.setattr(settings, "watch_config_path", str(config_path))
     monkeypatch.setattr(settings, "watch_seen_path", str(seen_path))
+    monkeypatch.setattr(settings, "watch_hold_path", str(hold_path))
     return config_path, seen_path

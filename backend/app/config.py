@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     watch_config_path: str = str(_DEFAULT_DATA / "watch.json")
     watch_seen_path: str = str(_DEFAULT_DATA / "watch_seen.json")
     watch_state_path: str = str(_DEFAULT_DATA / "watch_state.json")
+    watch_hold_path: str = str(_DEFAULT_DATA / "watch_hold.json")
 
 
 settings = Settings()

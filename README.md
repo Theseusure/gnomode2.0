@@ -43,10 +43,12 @@
 - Конфиг хранится на сервере (`backend/app/data/watch.json`, не в git).
 - По интервалу (или «Запустить сейчас»):
   1. скрининг по сохранённым фильтрам токенов;
-  2. парсинг до `max_tokens_per_cycle` токенов с фильтрами кошельков;
-  3. дедуп пар **кошелёк + токен** (`watch_seen.json`);
-  4. **сразу после каждого токена** — отправка новых кошельков в Telegram.
-- **Догон** после долгого простоя (≥ 1 ч): сужает `max_pair_age` до окна простоя (макс. 24ч). Короткие паузы / reload API догон не запускают.
+  2. **ATH-гейт** (`min_ath_mcap`, дефолт $50k): токены ниже порога — в hold (`watch_hold.json`), выше — qualify на парсинг early buyers;
+  3. парсинг до `max_tokens_per_cycle` токенов с фильтрами кошельков (`mcap_threshold` ≈ early entry);
+  4. дедуп пар **кошелёк + токен** (`watch_seen.json`);
+  5. **сразу после каждого токена** — отправка новых кошельков в Telegram.
+- **Догон** после долгого простоя (≥ 1 ч): сужает `max_pair_age` до окна простоя (макс. 24ч), прогревает индекс и **force re-enrich** hold-токенов (актуальный mcap/ATH). Короткие паузы / reload API догон не запускают.
+- ATH пишется только пока процесс **живой и обогащает** индекс — при сне ноутбука пик можно не увидеть. Для непрерывного режима см. Docker + `keep-awake` ниже.
 - Управление в UI: вкл/выкл, интервал, лимит токенов, фильтры, стоп, сброс счётчиков, очистка дедупа, проверка Telegram, живой лог.
 - Гном в чате: «За работу!» при старте, периодические фразы (бантер), сообщение при падении/остановке процесса.
 
@@ -63,21 +65,109 @@
 
 ---
 
-## Быстрый старт
+## Быстрый старт: парсер на ноутбуке (Docker)
 
-### 1. Конфиг
+Нужны: [Docker](https://docs.docker.com/engine/install/) + Docker Compose, аккаунт Telegram.  
+Один контейнер = API + UI. Состояние автопарса лежит на диске в `backend/app/data/` и переживает рестарты.
+
+### 1. Клон и `.env`
 
 ```bash
+git clone https://github.com/Theseusure/gnomode2.0.git
+cd gnomode2.0
 cp .env.example .env
-# обязательны для автопарса: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-# опционально: TELEGRAM_TOPIC_ID (топик форума)
+chmod +x scripts/*.sh
 ```
 
-После смены `.env` перезапустите API (`./scripts/dev-api.sh`). Кнопка «Проверить Telegram» в UI делает `getMe` + тестовый пинг.
+Откройте `.env` и заполните минимум:
 
-### 2. Backend
+```env
+TELEGRAM_BOT_TOKEN=...      # @BotFather → /newbot
+TELEGRAM_CHAT_ID=...        # личный чат или группа (-100…)
+# TELEGRAM_TOPIC_ID=...     # только для топика форума
+
+# Рекомендуется для автопарса (публичный RPC часто даёт 429):
+# RPC_URL=https://YOUR_ENDPOINT...
+# RPC_CONCURRENCY=3
+```
+
+Как взять `TELEGRAM_CHAT_ID`: напишите боту `/start`, затем откройте  
+`https://api.telegram.org/bot<TOKEN>/getUpdates` и найдите `"chat":{"id": ...}`.  
+В супергруппе id обычно вида `-100…`.
+
+### 2. Запуск
+
+**Непрерывно на ноутбуке** (блокирует idle/sleep, терминал должен быть открыт):
 
 ```bash
+./scripts/keep-awake.sh
+```
+
+Первая сборка займёт несколько минут. Дальше: [http://127.0.0.1:8000](http://127.0.0.1:8000)
+
+**В фоне** (Docker сам поднимет после ребута; **сон ноутбука не блокируется** — возможны пропуски ATH):
+
+```bash
+docker compose up -d --build
+docker compose logs -f
+```
+
+Остановка: `Ctrl+C` у `keep-awake`, либо `docker compose down`.
+
+### 3. Включить автопарс в UI
+
+1. Откройте [http://127.0.0.1:8000](http://127.0.0.1:8000) → вкладка **Автопарс**.
+2. **Проверить Telegram** — должен прийти тестовый пинг.
+3. Задайте фильтры (см. профиль ниже) → **Вкл** автопарс (или «Запустить сейчас»).
+4. Смотрите живой лог: скринер → hold/qualify → парсинг → отправка в Telegram.
+
+Пока индекс 24ч прогревается (первый запуск), первый цикл может подождать — это нормально.
+
+### Рекомендуемый профиль
+
+| Параметр | Значение | Зачем |
+|----------|----------|--------|
+| Интервал | 5–15 мин | чаще — свежее ATH, реже — меньше нагрузка на RPC |
+| `max_tokens_per_cycle` | 10–20 на публичном RPC | иначе 429 |
+| `min_ath_mcap` | целевой ATH токена (напр. 50000) | qualify только после пампа |
+| `wallet.mcap_threshold` | early entry (напр. 15000) | кошельки, зашедшие «рано» |
+| Telegram | обязателен | без него цикл не считается успешным |
+
+### Важно про сон ноутбука
+
+ATH пишется **только пока контейнер жив и обогащает** индекс. Если ноутбук уснул в момент пампа — пик можно не увидеть, токен останется в hold.
+
+- Для 24/7 на ноутбуке используйте `./scripts/keep-awake.sh` (не `-d`), либо отключите suspend / не закрывайте крышку.
+- Тот же `docker compose` можно перенести на VPS — логика та же, риска сна нет.
+
+### State на диске (не коммитить)
+
+| Файл | Назначение |
+|------|------------|
+| `backend/app/data/watch.json` | конфиг автопарса |
+| `watch_seen.json` | дедуп кошелёк+токен |
+| `watch_state.json` | время последнего успеха (догон) |
+| `watch_hold.json` | очередь ATH + уже распарсенные токены |
+
+### Частые команды
+
+```bash
+docker compose ps                 # статус
+docker compose logs -f --tail=100 # лог
+docker compose up -d --build      # пересобрать после git pull
+docker compose down               # остановить
+curl -s http://127.0.0.1:8000/api/health
+curl -s http://127.0.0.1:8000/api/watch/status
+```
+
+---
+
+## Разработка (без Docker)
+
+### Backend
+
+```bash
+cp .env.example .env   # если ещё нет
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
@@ -85,27 +175,22 @@ chmod +x scripts/*.sh
 ./scripts/dev-api.sh
 ```
 
-API: [http://127.0.0.1:8000](http://127.0.0.1:8000)  
-Health: [http://127.0.0.1:8000/api/health](http://127.0.0.1:8000/api/health)
-
-Тесты:
+API: [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
 ```bash
 cd backend && ../.venv/bin/pytest -q
 ```
 
-### 3. Frontend (второй терминал)
+### Frontend (второй терминал)
 
 ```bash
 ./scripts/dev-ui.sh
 ```
 
-UI: [http://127.0.0.1:5173](http://127.0.0.1:5173)  
-Vite слушает `127.0.0.1:5173` и проксирует `/api` → `http://127.0.0.1:8000`.
+UI: [http://127.0.0.1:5173](http://127.0.0.1:5173) — Vite проксирует `/api` → backend.  
+Если `ECONNREFUSED 127.0.0.1:8000` — сначала запустите API.
 
-> Если в консоли Vite `ECONNREFUSED 127.0.0.1:8000` — backend не запущен.
-
-### Production (один процесс)
+### Production без Docker (один процесс)
 
 ```bash
 cd frontend && npm install && npm run build && cd ..
@@ -129,7 +214,7 @@ PYTHONPATH=backend uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 
 | `TELEGRAM_BOT_TOKEN` | пусто | Токен бота (@BotFather) |
 | `TELEGRAM_CHAT_ID` | пусто | Chat id (или задайте в UI автопарса) |
 | `TELEGRAM_TOPIC_ID` | пусто | `message_thread_id` топика форума |
-| `WATCH_*_PATH` | `backend/app/data/…` | Пути `watch.json` / `watch_seen.json` / `watch_state.json` |
+| `WATCH_*_PATH` | `backend/app/data/…` | Пути `watch.json` / `watch_seen.json` / `watch_state.json` / `watch_hold.json` |
 
 ### Telegram
 
@@ -176,15 +261,19 @@ UI/API: фильтры → срез индекса → honeypot (GMGN) → со�
 
 ```text
 расписание / Run now
-  → screen(filters) [:max_tokens]
-  → для каждого токена:
+  → [догон] ensure_ready + force enrich hold (ATH)
+  → screen(filters)
+  → ATH gate: hold | qualify
+  → для каждого qualify[:max_tokens]:
        parse + wallet filters
        → новые (не в seen) → Telegram сразу
-       → mark_seen
+       → mark_seen / mark_token_parsed
   → следующий цикл через interval_sec
 ```
 
 Большинство мемкоинов на Robinhood торгуются на **Uniswap V4** (id пула — `bytes32`).
+
+**Ограничение ATH:** пик mcap — это max наблюдаемых сэмплов DexScreener, пока сервис работает. Исторический ATH за время простоя DexScreener не отдаёт; догон обновляет текущий mcap hold-токенов, но «пропущенный» памп может остаться незамеченным.
 
 ---
 

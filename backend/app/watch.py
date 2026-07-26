@@ -14,12 +14,15 @@ from .models import (
     JobLogEntry,
     ParseRequest,
     ScreenRequest,
+    WatchConfig,
     WatchScreenFilters,
     WatchStatus,
 )
 from .replay import parse_token
 from .screener import screen_tokens
 from .telegram import resolve_chat_id, resolve_topic_id, send_buyers, telegram_configured
+from .token_index import token_index
+from .watch_qualify import ath_gate_enabled, classify_for_parse, should_mark_parsed
 from .watch_store import WatchStore, catchup_lookback_hours, watch_store
 
 logger = logging.getLogger(__name__)
@@ -27,6 +30,10 @@ logger = logging.getLogger(__name__)
 _LOG_MAX = 400
 # Reloads / brief downtime must not open a useless 0.2–0.5h catch-up window.
 _MIN_CATCHUP_GAP_SEC = 3600.0
+
+
+class _WatchStopped(Exception):
+    """Cooperative stop requested during a watch cycle."""
 
 
 def apply_catchup_to_screen(
@@ -63,6 +70,8 @@ class WatchRunner:
         self._last_message: str = ""
         self._last_tokens_screened = 0
         self._last_tokens_parsed = 0
+        self._last_tokens_held = 0
+        self._last_tokens_qualified = 0
         self._last_buyers_found = 0
         self._last_buyers_new = 0
         self._last_buyers_sent = 0
@@ -115,11 +124,15 @@ class WatchRunner:
             last_message=self._last_message,
             last_tokens_screened=self._last_tokens_screened,
             last_tokens_parsed=self._last_tokens_parsed,
+            last_tokens_held=self._last_tokens_held,
+            last_tokens_qualified=self._last_tokens_qualified,
             last_buyers_found=self._last_buyers_found,
             last_buyers_new=self._last_buyers_new,
             last_buyers_sent=self._last_buyers_sent,
             last_buyers_skipped=self._last_buyers_skipped,
             seen_count=self._store.seen_count(),
+            hold_count=self._store.hold_count(),
+            parsed_token_count=self._store.parsed_token_count(),
             needs_catchup=self._needs_catchup,
             catchup_lookback_hours=lookback,
             is_catchup_run=self._is_catchup_run,
@@ -168,6 +181,8 @@ class WatchRunner:
         self._last_error = None
         self._last_tokens_screened = 0
         self._last_tokens_parsed = 0
+        self._last_tokens_held = 0
+        self._last_tokens_qualified = 0
         self._last_buyers_found = 0
         self._last_buyers_new = 0
         self._last_buyers_sent = 0
@@ -402,6 +417,12 @@ class WatchRunner:
             self._append_log("stop", self._last_message)
             return False
 
+        async def on_progress(stage: str, message: str, percent: float) -> None:
+            if self._stop_requested:
+                raise _WatchStopped()
+            self._last_message = message
+            self._append_log(stage, message, percent=round(percent * 100, 1))
+
         screen = cfg.screen
         if catchup:
             lookback = self._catchup_lookback_hours or catchup_lookback_hours(
@@ -411,18 +432,16 @@ class WatchRunner:
             self._last_message = (
                 f"Скрининг токенов за последние {lookback:.1f} ч (догон)…"
             )
+            # Warm index + refresh ATH for hold tokens before classify.
+            try:
+                await self._catchup_refresh_hold(cfg, on_progress=on_progress)
+            except _WatchStopped:
+                self._last_message = "Остановлено во время догона hold"
+                self._append_log("stop", self._last_message)
+                return False
         else:
             self._last_message = "Скрининг токенов…"
         self._append_log("screen", self._last_message, percent=5)
-
-        class _WatchStopped(Exception):
-            pass
-
-        async def on_progress(stage: str, message: str, percent: float) -> None:
-            if self._stop_requested:
-                raise _WatchStopped()
-            self._last_message = message
-            self._append_log(stage, message, percent=round(percent * 100, 1))
 
         async def _stop_waiter() -> None:
             while not self._stop_requested:
@@ -469,14 +488,72 @@ class WatchRunner:
             percent=20,
         )
 
-        tokens = [t.address for t in screened[: cfg.max_tokens_per_cycle]]
+        min_ath = cfg.screen.min_ath_mcap
+        gate_on = ath_gate_enabled(min_ath)
+        now = time.time()
+        hold_snapshot = self._store.load_hold() if gate_on else {}
+        parsed_tokens = self._store.load_parsed_tokens() if gate_on else set()
+        decision = classify_for_parse(
+            screened,
+            min_ath_mcap=min_ath,
+            hold=hold_snapshot,
+            parsed=parsed_tokens,
+            index_addresses=token_index.known_addresses() if gate_on else None,
+            now=now,
+        )
+        if gate_on:
+            self._store.apply_qualify_updates(
+                ath_updates=decision.ath_updates,
+                held=decision.held,
+                expired=decision.expired,
+                candidates=decision.candidates,
+                now=now,
+            )
+            self._last_tokens_held = len(decision.held)
+            self._last_tokens_qualified = len(decision.candidates)
+            self._append_log(
+                "hold",
+                f"ATH≥{min_ath:,.0f}: hold={len(decision.held)} "
+                f"(ждут порог), qualify={len(decision.candidates)} "
+                f"(к парсу), parsed={len(parsed_tokens)}"
+                + (f", expired={len(decision.expired)}" if decision.expired else ""),
+                percent=22,
+            )
+        else:
+            self._last_tokens_held = 0
+            self._last_tokens_qualified = len(decision.candidates)
+            self._append_log(
+                "hold",
+                "ATH-гейт выключен — парсим все из скринера "
+                f"(qualify={len(decision.candidates)})",
+                percent=22,
+            )
+
+        tokens = decision.candidates[: cfg.max_tokens_per_cycle]
+        if len(decision.candidates) > len(tokens):
+            self._append_log(
+                "hold",
+                f"Лимит цикла {cfg.max_tokens_per_cycle}: "
+                f"парсим {len(tokens)} из {len(decision.candidates)} qualify "
+                f"(остальные — следующий цикл)",
+                percent=23,
+            )
         if not tokens:
             self._last_tokens_parsed = 0
             self._last_buyers_found = 0
             self._last_buyers_new = 0
             self._last_buyers_sent = 0
             self._last_buyers_skipped = 0
-            self._last_message = "Нет токенов по фильтрам скринера"
+            if self._last_tokens_screened == 0:
+                self._last_message = "Нет токенов по фильтрам скринера"
+            elif gate_on and min_ath:
+                self._last_message = (
+                    f"Нет токенов для парса — {self._last_tokens_held} в hold "
+                    f"ждут ATH≥{min_ath:,.0f} "
+                    f"(скринер {self._last_tokens_screened})"
+                )
+            else:
+                self._last_message = "Нет токенов для парса"
             self._append_log("screen", self._last_message, percent=100)
             return True
 
@@ -554,6 +631,8 @@ class WatchRunner:
                 self._append_log("error", f"Ошибка парса {token[:10]}…: {exc}", token=token)
                 continue
             parsed += 1
+            if gate_on and should_mark_parsed(result.error):
+                self._store.mark_token_parsed(token)
             buyers = list(result.buyers)
             found_total += len(buyers)
             self._last_tokens_parsed = parsed
@@ -638,14 +717,70 @@ class WatchRunner:
         prefix = "Догон" if catchup else "Готово"
         if interrupted:
             prefix = "Остановлено"
+        hold_bit = ""
+        if gate_on:
+            hold_bit = f", hold {self._store.hold_count()}"
         self._last_message = (
             f"{prefix} — {parsed} ток., {found_total} кош., "
-            f"{sent_total} отпр., {skipped_total} проп."
+            f"{sent_total} отпр., {skipped_total} проп.{hold_bit}"
         )
         self._append_log("done", self._last_message, percent=100)
         if tg_failed and sent_total == 0:
             return False
         return not interrupted
+
+    async def _catchup_refresh_hold(
+        self,
+        cfg: WatchConfig,
+        *,
+        on_progress,
+    ) -> None:
+        """Ensure index is ready and force-refresh ATH for hold-queue tokens."""
+        if not ath_gate_enabled(cfg.screen.min_ath_mcap):
+            return
+        if self._stop_requested:
+            raise _WatchStopped()
+        self._last_message = "Догон: прогрев индекса…"
+        self._append_log("catchup", self._last_message, percent=2)
+        await token_index.ensure_ready(on_progress=on_progress)
+        if self._stop_requested:
+            raise _WatchStopped()
+        hold_snap = self._store.load_hold()
+        if not hold_snap:
+            self._append_log("catchup", "Догон: hold пуст — только скринер", percent=4)
+            return
+        self._last_message = f"Догон: re-enrich hold ({len(hold_snap)} ток.)…"
+        self._append_log("catchup", self._last_message, percent=3)
+        enriched = await token_index.force_enrich_addresses(
+            list(hold_snap.keys()),
+            on_progress=on_progress,
+        )
+        if self._stop_requested:
+            raise _WatchStopped()
+        ath_updates = {
+            addr: (max(row.ath_mcap, row.market_cap), row.symbol or "")
+            for addr, row in enriched.items()
+        }
+        if ath_updates:
+            self._store.apply_qualify_updates(
+                ath_updates=ath_updates,
+                held=list(hold_snap.keys()),
+                expired=[],
+                candidates=[],
+                now=time.time(),
+            )
+        crossed = 0
+        threshold = float(cfg.screen.min_ath_mcap or 0.0)
+        for addr, (peak, _sym) in ath_updates.items():
+            prev = float(hold_snap.get(addr, {}).get("ath_mcap") or 0.0)
+            if peak >= threshold and prev < threshold:
+                crossed += 1
+        self._append_log(
+            "catchup",
+            f"Догон hold: обновлено {len(ath_updates)}/{len(hold_snap)}"
+            + (f", новых ATH≥порога: {crossed}" if crossed else ""),
+            percent=4,
+        )
 
 
 watch_runner = WatchRunner()

@@ -14,10 +14,12 @@ def client(tmp_path, monkeypatch):
     config_path = tmp_path / "watch.json"
     seen_path = tmp_path / "seen.json"
     state_path = tmp_path / "state.json"
+    hold_path = tmp_path / "hold.json"
     store = WatchStore(
         config_path=config_path,
         seen_path=seen_path,
         state_path=state_path,
+        hold_path=hold_path,
     )
 
     from app.config import settings
@@ -27,6 +29,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "watch_config_path", str(config_path))
     monkeypatch.setattr(settings, "watch_seen_path", str(seen_path))
     monkeypatch.setattr(settings, "watch_state_path", str(state_path))
+    monkeypatch.setattr(settings, "watch_hold_path", str(hold_path))
 
     import app.main as main
     import app.watch as watch_mod
@@ -73,6 +76,13 @@ def test_get_put_watch(client):
     st = res.json()
     assert st["enabled"] is True
     assert st["telegram_configured"] is True
+    assert st["hold_count"] == 0
+    assert st["parsed_token_count"] == 0
+    assert "last_tokens_held" in st
+    assert "last_tokens_qualified" in st
+
+    res = c.get("/api/watch")
+    assert res.json()["screen"]["min_ath_mcap"] == 50_000.0
 
 
 def test_clear_seen(client):
