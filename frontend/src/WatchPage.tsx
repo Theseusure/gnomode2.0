@@ -1,35 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { FilterPresets } from './FilterPresets'
+import { useCallback, useEffect, useState } from 'react'
 
 type ScreenSortBy = 'liquidity' | 'market_cap' | 'traders' | 'pair_age'
 type ScreenSortOrder = 'asc' | 'desc'
-
-type ScreenFiltersForm = {
-  min_liq: string
-  max_liq: string
-  min_mcap: string
-  max_mcap: string
-  min_ath_mcap: string
-  min_traders: string
-  max_traders: string
-  min_pair_age_hours: string
-  max_pair_age_hours: string
-  sort_by: ScreenSortBy
-  sort_order: ScreenSortOrder
-  max_results: string
-  exclude_honeypots: boolean
-}
-
-type WalletFiltersForm = {
-  mcap_threshold: string
-  exclude_honeypots: boolean
-  min_wallet_balance_eth: string
-  max_wallet_balance_eth: string
-  min_hold_time_minutes: string
-  max_hold_time_minutes: string
-  min_tokens_traded_7d: string
-  max_tokens_traded_7d: string
-}
 
 type WatchConfig = {
   enabled: boolean
@@ -132,44 +104,8 @@ function fmtLookback(hours: number | null | undefined) {
   return `${hours.toFixed(1)} ч`
 }
 
-const DEFAULT_SCREEN: ScreenFiltersForm = {
-  min_liq: '',
-  max_liq: '',
-  min_mcap: '',
-  max_mcap: '',
-  min_ath_mcap: '50000',
-  min_traders: '',
-  max_traders: '',
-  min_pair_age_hours: '',
-  max_pair_age_hours: '',
-  sort_by: 'liquidity',
-  sort_order: 'desc',
-  max_results: '500',
-  exclude_honeypots: true,
-}
-
-const DEFAULT_WALLET: WalletFiltersForm = {
-  mcap_threshold: '15000',
-  exclude_honeypots: true,
-  min_wallet_balance_eth: '',
-  max_wallet_balance_eth: '',
-  min_hold_time_minutes: '',
-  max_hold_time_minutes: '',
-  min_tokens_traded_7d: '',
-  max_tokens_traded_7d: '',
-}
-
-function parseOpt(raw: string): number | null {
-  const t = raw.trim()
-  if (!t) return null
-  const n = Number(t)
-  return Number.isFinite(n) ? n : null
-}
-
-function numToStr(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v)) return ''
-  return String(v)
-}
+const DEFAULT_INTERVAL_MIN = '15'
+const DEFAULT_MAX_TOKENS = '20'
 
 function fmtTs(ts: number | null) {
   if (!ts) return '—'
@@ -193,8 +129,6 @@ function fmtIn(ts: number | null) {
 }
 
 function configToForms(cfg: WatchConfig): {
-  screen: ScreenFiltersForm
-  wallet: WalletFiltersForm
   enabled: boolean
   intervalMin: string
   maxTokens: string
@@ -209,46 +143,16 @@ function configToForms(cfg: WatchConfig): {
     chatId: cfg.telegram_chat_id || '',
     topicId: cfg.telegram_topic_id || '',
     gnomeBanter: cfg.gnome_banter_enabled !== false,
-    screen: {
-      min_liq: numToStr(cfg.screen.min_liq),
-      max_liq: numToStr(cfg.screen.max_liq),
-      min_mcap: numToStr(cfg.screen.min_mcap),
-      max_mcap: numToStr(cfg.screen.max_mcap),
-      min_ath_mcap:
-        cfg.screen.min_ath_mcap === undefined
-          ? '50000'
-          : numToStr(cfg.screen.min_ath_mcap),
-      min_traders: numToStr(cfg.screen.min_traders),
-      max_traders: numToStr(cfg.screen.max_traders),
-      min_pair_age_hours: numToStr(cfg.screen.min_pair_age_hours),
-      max_pair_age_hours: numToStr(cfg.screen.max_pair_age_hours),
-      sort_by: cfg.screen.sort_by,
-      sort_order: cfg.screen.sort_order,
-      max_results: String(cfg.screen.max_results || 500),
-      exclude_honeypots: cfg.screen.exclude_honeypots,
-    },
-    wallet: {
-      mcap_threshold: numToStr(cfg.wallet.mcap_threshold) || '15000',
-      exclude_honeypots: cfg.wallet.exclude_honeypots,
-      min_wallet_balance_eth: numToStr(cfg.wallet.min_wallet_balance_eth),
-      max_wallet_balance_eth: numToStr(cfg.wallet.max_wallet_balance_eth),
-      min_hold_time_minutes: numToStr(cfg.wallet.min_hold_time_minutes),
-      max_hold_time_minutes: numToStr(cfg.wallet.max_hold_time_minutes),
-      min_tokens_traded_7d: numToStr(cfg.wallet.min_tokens_traded_7d),
-      max_tokens_traded_7d: numToStr(cfg.wallet.max_tokens_traded_7d),
-    },
   }
 }
 
 export default function WatchPage() {
   const [enabled, setEnabled] = useState(false)
-  const [intervalMin, setIntervalMin] = useState('15')
-  const [maxTokens, setMaxTokens] = useState('20')
+  const [intervalMin, setIntervalMin] = useState(DEFAULT_INTERVAL_MIN)
+  const [maxTokens, setMaxTokens] = useState(DEFAULT_MAX_TOKENS)
   const [chatId, setChatId] = useState('')
   const [topicId, setTopicId] = useState('')
   const [gnomeBanter, setGnomeBanter] = useState(true)
-  const [screen, setScreen] = useState<ScreenFiltersForm>(DEFAULT_SCREEN)
-  const [wallet, setWallet] = useState<WalletFiltersForm>(DEFAULT_WALLET)
   const [status, setStatus] = useState<WatchStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -272,8 +176,6 @@ export default function WatchPage() {
       setChatId(forms.chatId)
       setTopicId(forms.topicId)
       setGnomeBanter(forms.gnomeBanter)
-      setScreen(forms.screen)
-      setWallet(forms.wallet)
       setStatus(st)
       setError('')
     } catch (e) {
@@ -299,54 +201,33 @@ export default function WatchPage() {
     return () => window.clearInterval(id)
   }, [])
 
-  const buildConfig = useCallback((): WatchConfig => {
+  const buildSchedulePayload = useCallback(async (): Promise<WatchConfig> => {
+    const curRes = await fetch('/api/watch')
+    if (!curRes.ok) throw new Error(await readApiError(curRes, 'Чтение конфига'))
+    const current = (await curRes.json()) as WatchConfig
     const mins = Math.max(1, Number(intervalMin) || 15)
     const maxTok = Math.min(2000, Math.max(1, Number(maxTokens) || 20))
-    const maxResults = Math.min(2000, Math.max(1, Number(screen.max_results) || 500))
     return {
+      ...current,
       enabled,
       interval_sec: mins * 60,
       max_tokens_per_cycle: maxTok,
       telegram_chat_id: chatId.trim(),
       telegram_topic_id: topicId.trim(),
       gnome_banter_enabled: gnomeBanter,
-      screen: {
-        min_liq: parseOpt(screen.min_liq),
-        max_liq: parseOpt(screen.max_liq),
-        min_mcap: parseOpt(screen.min_mcap),
-        max_mcap: parseOpt(screen.max_mcap),
-        min_ath_mcap: parseOpt(screen.min_ath_mcap),
-        min_traders: parseOpt(screen.min_traders),
-        max_traders: parseOpt(screen.max_traders),
-        min_pair_age_hours: parseOpt(screen.min_pair_age_hours),
-        max_pair_age_hours: parseOpt(screen.max_pair_age_hours),
-        exclude_honeypots: screen.exclude_honeypots,
-        sort_by: screen.sort_by,
-        sort_order: screen.sort_order,
-        max_results: maxResults,
-      },
-      wallet: {
-        mcap_threshold: parseOpt(wallet.mcap_threshold),
-        exclude_honeypots: wallet.exclude_honeypots,
-        min_wallet_balance_eth: parseOpt(wallet.min_wallet_balance_eth),
-        max_wallet_balance_eth: parseOpt(wallet.max_wallet_balance_eth),
-        min_hold_time_minutes: parseOpt(wallet.min_hold_time_minutes),
-        max_hold_time_minutes: parseOpt(wallet.max_hold_time_minutes),
-        min_tokens_traded_7d: parseOpt(wallet.min_tokens_traded_7d),
-        max_tokens_traded_7d: parseOpt(wallet.max_tokens_traded_7d),
-      },
     }
-  }, [enabled, intervalMin, maxTokens, chatId, topicId, gnomeBanter, screen, wallet])
+  }, [enabled, intervalMin, maxTokens, chatId, topicId, gnomeBanter])
 
   const save = useCallback(async () => {
     setSaving(true)
     setActionMsg('')
     setError('')
     try {
+      const payload = await buildSchedulePayload()
       const res = await fetch('/api/watch', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildConfig()),
+        body: JSON.stringify(payload),
       })
       if (!res.ok) throw new Error(await readApiError(res, 'Не удалось сохранить'))
       const cfg = (await res.json()) as WatchConfig
@@ -357,9 +238,7 @@ export default function WatchPage() {
       setChatId(forms.chatId)
       setTopicId(forms.topicId)
       setGnomeBanter(forms.gnomeBanter)
-      setScreen(forms.screen)
-      setWallet(forms.wallet)
-      setActionMsg('Сохранено')
+      setActionMsg('Сохранено (фильтры — во вкладке Настройки)')
       const st = await fetch('/api/watch/status')
       if (st.ok) setStatus((await st.json()) as WatchStatus)
     } catch (e) {
@@ -367,17 +246,17 @@ export default function WatchPage() {
     } finally {
       setSaving(false)
     }
-  }, [buildConfig])
+  }, [buildSchedulePayload])
 
   const runNow = useCallback(async () => {
     setActionMsg('')
     setError('')
     try {
-      // Persist current form first so the cycle uses what you see.
+      const payload = await buildSchedulePayload()
       const saveRes = await fetch('/api/watch', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildConfig()),
+        body: JSON.stringify(payload),
       })
       if (!saveRes.ok) throw new Error(await readApiError(saveRes, 'Не удалось сохранить'))
       const res = await fetch('/api/watch/run', { method: 'POST' })
@@ -387,7 +266,7 @@ export default function WatchPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [buildConfig])
+  }, [buildSchedulePayload])
 
   const stopNow = useCallback(async () => {
     setActionMsg('')
@@ -438,11 +317,12 @@ export default function WatchPage() {
     setActionMsg('')
     setError('')
     try {
-      // Persist form first so chat/topic fields are what we test.
+      // Persist schedule/Telegram first so chat/topic fields are what we test.
+      const payload = await buildSchedulePayload()
       const saveRes = await fetch('/api/watch', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildConfig()),
+        body: JSON.stringify(payload),
       })
       if (!saveRes.ok) throw new Error(await readApiError(saveRes, 'Не удалось сохранить'))
       const res = await fetch('/api/watch/test-telegram', { method: 'POST' })
@@ -460,18 +340,7 @@ export default function WatchPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [buildConfig])
-
-  const setScreenField = <K extends keyof ScreenFiltersForm>(key: K, value: ScreenFiltersForm[K]) => {
-    setScreen((prev) => ({ ...prev, [key]: value }))
-  }
-
-  const setWalletField = <K extends keyof WalletFiltersForm>(key: K, value: WalletFiltersForm[K]) => {
-    setWallet((prev) => ({ ...prev, [key]: value }))
-  }
-
-  const screenPreset = useMemo(() => screen, [screen])
-  const walletPreset = useMemo(() => wallet, [wallet])
+  }, [buildSchedulePayload])
 
   if (loading) {
     return (
@@ -697,138 +566,11 @@ export default function WatchPage() {
       </section>
 
       <section className="panel input-panel">
-        <h2 className="section-title">Фильтры токенов (скринер)</h2>
-        <FilterPresets
-          storageKey="gnomode.presets.watch.tokens"
-          current={screenPreset}
-          onApply={(v) => setScreen({ ...DEFAULT_SCREEN, ...v })}
-        />
-        <div className="filter-grid">
-          <label className="field">
-            <span>Мин. ликвидность ($)</span>
-            <input type="number" min={0} value={screen.min_liq} onChange={(e) => setScreenField('min_liq', e.target.value)} placeholder="любая" />
-          </label>
-          <label className="field">
-            <span>Макс. ликвидность ($)</span>
-            <input type="number" min={0} value={screen.max_liq} onChange={(e) => setScreenField('max_liq', e.target.value)} placeholder="любая" />
-          </label>
-          <label className="field">
-            <span>Мин. mcap ($)</span>
-            <input type="number" min={0} value={screen.min_mcap} onChange={(e) => setScreenField('min_mcap', e.target.value)} placeholder="любая" />
-          </label>
-          <label className="field">
-            <span>Макс. mcap ($)</span>
-            <input type="number" min={0} value={screen.max_mcap} onChange={(e) => setScreenField('max_mcap', e.target.value)} placeholder="любая" />
-          </label>
-          <label className="field">
-            <span>Мин. ATH mcap ($)</span>
-            <input
-              type="number"
-              min={0}
-              value={screen.min_ath_mcap}
-              onChange={(e) => setScreenField('min_ath_mcap', e.target.value)}
-              placeholder="выкл"
-              title="Парсить кошельки только после ATH ≥ порога. Пусто = гейт выключен."
-            />
-          </label>
-          <label className="field">
-            <span>Мин. трейдеров (24ч)</span>
-            <input type="number" min={0} value={screen.min_traders} onChange={(e) => setScreenField('min_traders', e.target.value)} placeholder="любое" />
-          </label>
-          <label className="field">
-            <span>Макс. трейдеров (24ч)</span>
-            <input type="number" min={0} value={screen.max_traders} onChange={(e) => setScreenField('max_traders', e.target.value)} placeholder="любое" />
-          </label>
-          <label className="field">
-            <span>Мин. возраст пары (ч)</span>
-            <input type="number" min={0} value={screen.min_pair_age_hours} onChange={(e) => setScreenField('min_pair_age_hours', e.target.value)} placeholder="любой" />
-          </label>
-          <label className="field">
-            <span>Макс. возраст пары (ч)</span>
-            <input type="number" min={0} value={screen.max_pair_age_hours} onChange={(e) => setScreenField('max_pair_age_hours', e.target.value)} placeholder="любой" />
-          </label>
-          <label className="field">
-            <span>Сортировка</span>
-            <select value={screen.sort_by} onChange={(e) => setScreenField('sort_by', e.target.value as ScreenSortBy)}>
-              <option value="liquidity">Ликвидность</option>
-              <option value="market_cap">Капитализация</option>
-              <option value="traders">Трейдеры</option>
-              <option value="pair_age">Возраст пары</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Порядок</span>
-            <select value={screen.sort_order} onChange={(e) => setScreenField('sort_order', e.target.value as ScreenSortOrder)}>
-              <option value="desc">По убыванию</option>
-              <option value="asc">По возрастанию</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Макс. результатов</span>
-            <input type="number" min={1} max={2000} value={screen.max_results} onChange={(e) => setScreenField('max_results', e.target.value)} />
-          </label>
-          <label className="field check-field">
-            <span>Безопасность</span>
-            <label className="check-inline">
-              <input
-                type="checkbox"
-                checked={screen.exclude_honeypots}
-                onChange={(e) => setScreenField('exclude_honeypots', e.target.checked)}
-              />
-              Пропускать honeypot
-            </label>
-          </label>
-        </div>
-      </section>
-
-      <section className="panel input-panel">
-        <h2 className="section-title">Фильтры кошельков</h2>
-        <FilterPresets
-          storageKey="gnomode.presets.watch.wallets"
-          current={walletPreset}
-          onApply={(v) => setWallet({ ...DEFAULT_WALLET, ...v })}
-        />
-        <div className="filter-grid">
-          <label className="field">
-            <span>Порог mcap (USD)</span>
-            <input type="number" min={0} step={500} value={wallet.mcap_threshold} onChange={(e) => setWalletField('mcap_threshold', e.target.value)} />
-          </label>
-          <label className="field">
-            <span>Мин. баланс (ETH)</span>
-            <input type="number" min={0} step={0.001} value={wallet.min_wallet_balance_eth} onChange={(e) => setWalletField('min_wallet_balance_eth', e.target.value)} placeholder="любой" />
-          </label>
-          <label className="field">
-            <span>Макс. баланс (ETH)</span>
-            <input type="number" min={0} step={0.001} value={wallet.max_wallet_balance_eth} onChange={(e) => setWalletField('max_wallet_balance_eth', e.target.value)} placeholder="любой" />
-          </label>
-          <label className="field">
-            <span>Мин. холд (мин)</span>
-            <input type="number" min={0} value={wallet.min_hold_time_minutes} onChange={(e) => setWalletField('min_hold_time_minutes', e.target.value)} placeholder="любой" />
-          </label>
-          <label className="field">
-            <span>Макс. холд (мин)</span>
-            <input type="number" min={0} value={wallet.max_hold_time_minutes} onChange={(e) => setWalletField('max_hold_time_minutes', e.target.value)} placeholder="любой" />
-          </label>
-          <label className="field">
-            <span>Мин. токенов за 7д</span>
-            <input type="number" min={0} value={wallet.min_tokens_traded_7d} onChange={(e) => setWalletField('min_tokens_traded_7d', e.target.value)} placeholder="любой" />
-          </label>
-          <label className="field">
-            <span>Макс. токенов за 7д</span>
-            <input type="number" min={0} value={wallet.max_tokens_traded_7d} onChange={(e) => setWalletField('max_tokens_traded_7d', e.target.value)} placeholder="любой" />
-          </label>
-          <label className="field check-field">
-            <span>Безопасность</span>
-            <label className="check-inline">
-              <input
-                type="checkbox"
-                checked={wallet.exclude_honeypots}
-                onChange={(e) => setWalletField('exclude_honeypots', e.target.checked)}
-              />
-              Пропускать honeypot
-            </label>
-          </label>
-        </div>
+        <h2 className="section-title">Фильтры</h2>
+        <p className="lede" style={{ margin: 0 }}>
+          Фильтры токена и первой сделки кошелька вынесены во вкладку{' '}
+          <b>Настройки</b>. Здесь — только расписание, Telegram и лог автопарса.
+        </p>
       </section>
     </>
   )
