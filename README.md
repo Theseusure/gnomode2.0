@@ -8,26 +8,27 @@
 
 ## Какую ссылку дать коллегам
 
-| Версия | Репозиторий | Ссылка на снимок |
-|--------|-------------|------------------|
-| **2.1** (актуальная линия Theseusure) | [Theseusure/gnomode2.0](https://github.com/Theseusure/gnomode2.0) | [tree/v2.1.0](https://github.com/Theseusure/gnomode2.0/tree/v2.1.0) *(после пуша)* / ветка `feature/wallet-followup` |
-| **2.0** (линия bunt13) | [bunt13/gnomode](https://github.com/bunt13/gnomode) | **[tree/v2.0.0](https://github.com/bunt13/gnomode/tree/v2.0.0)** |
+| Версия | Репозиторий | Ссылка |
+|--------|-------------|--------|
+| **2.2** (актуальная: Follow-up + свой Telegram-бот) | [Theseusure/gnomode2.0](https://github.com/Theseusure/gnomode2.0) | [tree/v2.2.0](https://github.com/Theseusure/gnomode2.0/tree/v2.2.0) · ветка `feature/wallet-followup` |
+| **2.2** (зеркало) | [bunt13/gnomode](https://github.com/bunt13/gnomode) | [tree/v2.2.0](https://github.com/bunt13/gnomode/tree/v2.2.0) · ветка `v2` |
+| **2.0** | [bunt13/gnomode](https://github.com/bunt13/gnomode) | [tree/v2.0.0](https://github.com/bunt13/gnomode/tree/v2.0.0) |
 
-Клон фиксированной 2.0:
-
-```bash
-git clone --branch v2.0.0 https://github.com/bunt13/gnomode.git
-cd gnomode
-```
-
-Клон ветки с Follow-up (2.1):
+Клон актуальной 2.2:
 
 ```bash
-git clone --branch feature/wallet-followup https://github.com/Theseusure/gnomode2.0.git
+git clone --branch v2.2.0 https://github.com/Theseusure/gnomode2.0.git
 cd gnomode2.0
 ```
 
-> `main` в `bunt13/gnomode` пока остаётся на **v1.x**. Для 2.x берите тег `v2.0.0` или ветку `v2`, не `main`.
+Запасной клон с bunt13:
+
+```bash
+git clone --branch v2.2.0 https://github.com/bunt13/gnomode.git
+cd gnomode
+```
+
+> В `bunt13/gnomode` ветка `main` пока на **v1.x**. Для 2.x берите тег `v2.2.0` / ветку `v2`, не `main`.
 
 ---
 
@@ -453,5 +454,6 @@ gnomode/
 
 ## Репозитории
 
-- 2.0 snapshot: [bunt13/gnomode @ v2.0.0](https://github.com/bunt13/gnomode/tree/v2.0.0)
-- 2.1 / разработка Follow-up: [Theseusure/gnomode2.0](https://github.com/Theseusure/gnomode2.0) (ветка `feature/wallet-followup`, тег `v2.1.0` после пуша с правами Theseusure)
+- Актуальный снимок **2.2**: [Theseusure/gnomode2.0 @ v2.2.0](https://github.com/Theseusure/gnomode2.0/tree/v2.2.0)
+- Зеркало / bunt13: [bunt13/gnomode @ v2.2.0](https://github.com/bunt13/gnomode/tree/v2.2.0)
+- Ранний снимок 2.0: [bunt13/gnomode @ v2.0.0](https://github.com/bunt13/gnomode/tree/v2.0.0)
