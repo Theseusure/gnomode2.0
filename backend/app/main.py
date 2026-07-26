@@ -38,7 +38,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 
-app = FastAPI(title="Gnomode — Robinhood Early Buyers", version="2.0.0")
+app = FastAPI(title="Gnomode — Robinhood Early Buyers", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
