@@ -54,13 +54,48 @@ def should_alert_deal(
     *,
     max_mcap_alert: float,
     alert_on_deals: list[int],
+    min_mcap_alert: float | None = None,
+    bought_usd: float | None = None,
+    min_bought_usd: float | None = None,
+    max_bought_usd: float | None = None,
 ) -> bool:
-    """True only for configured deal indices at/under low-mcap threshold."""
+    """True only for configured deal indices that pass native filter set.
+
+    Mirrors RayBot-style gates without external RayBot:
+    - deal index in alert_on_deals (default 2, 3)
+    - mcap ≤ max_mcap_alert (high mcap → no alert)
+    - optional mcap ≥ min_mcap_alert
+    - optional bought_usd min/max when value is known
+    """
     if deal_index not in alert_on_deals:
         return False
     if mcap_at_buy is None:
         return False
-    return float(mcap_at_buy) <= float(max_mcap_alert)
+    mcap = float(mcap_at_buy)
+    if mcap > float(max_mcap_alert):
+        return False
+    if min_mcap_alert is not None and mcap < float(min_mcap_alert):
+        return False
+    if bought_usd is not None:
+        usd = float(bought_usd)
+        if min_bought_usd is not None and usd < float(min_bought_usd):
+            return False
+        if max_bought_usd is not None and usd > float(max_bought_usd):
+            return False
+    elif min_bought_usd is not None:
+        # Require known size when min filter is set
+        return False
+    return True
+
+
+def alert_kwargs_from_config(cfg: FollowupConfig) -> dict:
+    return {
+        "max_mcap_alert": cfg.max_mcap_alert,
+        "alert_on_deals": list(cfg.alert_on_deals or [2, 3]),
+        "min_mcap_alert": cfg.min_mcap_alert,
+        "min_bought_usd": cfg.min_bought_usd,
+        "max_bought_usd": cfg.max_bought_usd,
+    }
 
 
 async def estimate_token_mcap(token: str) -> float | None:
@@ -125,6 +160,8 @@ class FollowupRunner:
         self._wake.set()
 
     def status(self) -> FollowupStatus:
+        from .followup_bot import followup_bot
+
         cfg = self._store.load_config()
         watching, done = self._store.counts()
         chat = resolve_chat_id(cfg.telegram_chat_id)
@@ -132,6 +169,8 @@ class FollowupRunner:
             enabled=cfg.enabled,
             running=self._running,
             telegram_configured=telegram_configured(chat),
+            bot_commands_enabled=cfg.bot_commands_enabled,
+            bot_polling=followup_bot.polling,
             raybot_configured=raybot_configured() and cfg.raybot_enabled,
             next_run_ts=self._next_run_ts,
             last_run_ts=self._last_run_ts,
@@ -267,8 +306,8 @@ class FollowupRunner:
                 if not should_alert_deal(
                     deal.deal_index,
                     deal.mcap_at_buy,
-                    max_mcap_alert=cfg.max_mcap_alert,
-                    alert_on_deals=list(cfg.alert_on_deals or [2, 3]),
+                    bought_usd=deal.bought_usd,
+                    **alert_kwargs_from_config(cfg),
                 ):
                     continue
                 if not self._store.mark_notified(deal.wallet, deal.token):
@@ -306,7 +345,7 @@ class FollowupRunner:
         chat = resolve_chat_id(cfg.telegram_chat_id)
         topic_id = resolve_topic_id(cfg.telegram_topic_id)
         tg_ok = telegram_configured(chat)
-        alert_deals = set(cfg.alert_on_deals or [2, 3])
+        gate = alert_kwargs_from_config(cfg)
 
         self._last_message = f"Проверка {len(wallets)} кош…"
         self._append_log("scan", self._last_message, percent=5)
@@ -327,8 +366,8 @@ class FollowupRunner:
                 if not should_alert_deal(
                     deal.deal_index,
                     deal.mcap_at_buy,
-                    max_mcap_alert=cfg.max_mcap_alert,
-                    alert_on_deals=list(alert_deals),
+                    bought_usd=deal.bought_usd,
+                    **gate,
                 ):
                     self._append_log(
                         "skip",

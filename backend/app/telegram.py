@@ -95,6 +95,14 @@ def _bot_api_url(method: str) -> str:
     return f"https://api.telegram.org/bot{token}/{method}"
 
 
+def bot_api_url(method: str) -> str:
+    """Public wrapper for Telegram Bot API method URLs."""
+    return _bot_api_url(method)
+
+
+TG_CLIENT_KW = _TG_CLIENT_KW
+
+
 def _fmt_num(n: float | int | None, digits: int = 2) -> str:
     if n is None:
         return "—"

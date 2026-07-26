@@ -36,7 +36,7 @@ cd gnomode2.0
 1. **Скринер** — живой индекс токенов за ~24ч, фильтры (liq / age / traders / mcap), honeypot-отсев.
 2. **Кошельки (Early buyers)** — по адресу токена: кто купил **до** порога mcap (по умолчанию **$15 000**).
 3. **Автопарс** — по расписанию: скринер → ATH-гейт → early buyers → **Telegram**.
-4. **Follow-up** — сохраняет этих кошельков в таблицу и шлёт алерт, когда они берут **2-й или 3-й новый токен снова на низком mcap** (высокий mcap — без уведомления). Опционально синхронизирует адреса в **RayBot** (EVM).
+4. **Follow-up** — сохраняет этих кошельков в таблицу и шлёт алерт, когда они берут **2-й или 3-й новый токен снова на низком mcap** (высокий mcap — без уведомления). **Свой Telegram-бот** с фильтрами и командами (RayBot не нужен).
 
 ### Идея Follow-up одной фразой
 
@@ -176,18 +176,28 @@ ATH пишется **только пока процесс жив и обогащ
 В UI: вкл/выкл, интервал, лимиты, стоп, сброс счётчиков, очистка дедупа, тест Telegram, живой лог.  
 Гном в чате: старт / бантер / сообщение при падении процесса.
 
-### Follow-up
+### Follow-up + свой Telegram-бот (без RayBot)
 
 | Шаг | Что происходит |
 |-----|----------------|
 | Discovery | После успешного Telegram из автопарса → deal **#1** в SQLite (`followup.db`, WAL) |
 | Учёт | Distinct-токены: #1, #2, #3… Один токен = одна сделка |
-| Алерт | Только если `deal_index ∈ {2,3}` **и** `mcap ≤ max_mcap_alert` |
+| Алерт | Только если `deal_index ∈ {2,3}` **и** нативные фильтры mcap/usd пройдены |
 | Высокий mcap | Сделка пишется в таблицу, **уведомления нет** |
 | Стоп | После `max_deals` (по умолчанию 3) статус кошелька `done` |
 | Мониторинг | Poll Blockscout `token-transfers` + mcap с DexScreener |
-| RayBot | Опционально: add wallet + EVM-фильтры `evm_buys`, `evm_mc_trade_max` ([документация](https://docs.raybot.app/start)). RH-кошельки в RayBot ведутся через **EVM** |
-| Webhook | Опционально `POST /api/followup/webhook/raybot` (нужен публичный HTTPS) |
+| **Свой бот** | Long-poll на том же `TELEGRAM_BOT_TOKEN`: `/status` `/wallets` `/filters` `/on` `/off` `/run` `/set_max_mcap` `/set_min_mcap` `/set_interval` `/help` |
+| RayBot | **Не нужен.** `raybot.py` оставлен как legacy (`raybot_enabled=false`) |
+
+#### Фильтры алерта (нативные)
+
+| Фильтр | Смысл |
+|--------|--------|
+| `max_mcap_alert` | Алерт только если mcap покупки ≤ порога |
+| `min_mcap_alert` | Опциональный пол mcap |
+| `min_bought_usd` / `max_bought_usd` | Размер покупки (если известен) |
+| `alert_on_deals` | По умолчанию `[2, 3]` |
+| `buys_only` | Только входящие токены с контракта (DEX) |
 
 Файлы состояния Follow-up (не коммитить):
 
@@ -410,8 +420,8 @@ gnomode/
 ├── backend/app/
 │   ├── main.py              # FastAPI (version в OpenAPI)
 │   ├── watch.py / watch_store.py
-│   ├── followup.py / followup_store.py
-│   ├── raybot.py
+│   ├── followup.py / followup_store.py / followup_bot.py
+│   ├── raybot.py                # legacy sync (optional)
 │   ├── telegram.py
 │   ├── token_index.py / screener.py / replay.py
 │   ├── wallet_metrics.py / pools.py / blockscout.py / …

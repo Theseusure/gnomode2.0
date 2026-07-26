@@ -15,6 +15,40 @@ def test_should_alert_deal_low_mcap_only():
     assert not should_alert_deal(2, None, max_mcap_alert=15_000, alert_on_deals=[2, 3])
 
 
+def test_should_alert_min_mcap_and_usd():
+    assert not should_alert_deal(
+        2,
+        500,
+        max_mcap_alert=15_000,
+        alert_on_deals=[2, 3],
+        min_mcap_alert=1_000,
+    )
+    assert should_alert_deal(
+        2,
+        2_000,
+        max_mcap_alert=15_000,
+        alert_on_deals=[2, 3],
+        min_mcap_alert=1_000,
+    )
+    assert not should_alert_deal(
+        2,
+        5_000,
+        max_mcap_alert=15_000,
+        alert_on_deals=[2, 3],
+        bought_usd=5,
+        min_bought_usd=50,
+    )
+    assert should_alert_deal(
+        2,
+        5_000,
+        max_mcap_alert=15_000,
+        alert_on_deals=[2, 3],
+        bought_usd=100,
+        min_bought_usd=50,
+        max_bought_usd=500,
+    )
+
+
 def test_ingest_and_second_deal(tmp_path):
     store = FollowupStore(
         db_path=str(tmp_path / "followup.db"),

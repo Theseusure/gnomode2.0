@@ -241,11 +241,21 @@ class FollowupConfig(BaseModel):
     interval_sec: int = Field(default=300, ge=60, le=86400)
     # Alert only when buy mcap is at or below this (USD). High mcap → record, no alert.
     max_mcap_alert: float = Field(default=15_000.0, ge=0)
+    # Optional lower bound (USD). None = no floor.
+    min_mcap_alert: float | None = None
+    # Optional size filters on bought_usd (when known).
+    min_bought_usd: float | None = None
+    max_bought_usd: float | None = None
     # Deal indices that trigger Telegram (1 = discovery only in watch; 2/3 = follow-up).
     alert_on_deals: list[int] = Field(default_factory=lambda: [2, 3])
     max_deals: int = Field(default=3, ge=1, le=20)
+    # One distinct token = one deal (always). Buys-only scan ignores sells/transfers-out.
+    buys_only: bool = True
     telegram_chat_id: str = ""
     telegram_topic_id: str = ""
+    # Native Telegram bot commands (/status, /filters, …) via long-poll.
+    bot_commands_enabled: bool = True
+    # Legacy optional RayBot sync (not required — native bot replaces it).
     raybot_enabled: bool = False
     # When True, ingest early buyers from autoparse into the follow-up table.
     ingest_from_watch: bool = True
@@ -281,6 +291,8 @@ class FollowupStatus(BaseModel):
     enabled: bool = False
     running: bool = False
     telegram_configured: bool = False
+    bot_commands_enabled: bool = True
+    bot_polling: bool = False
     raybot_configured: bool = False
     next_run_ts: float | None = None
     last_run_ts: float | None = None

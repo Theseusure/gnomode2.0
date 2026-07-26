@@ -38,7 +38,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 
-app = FastAPI(title="Gnomode — Robinhood Early Buyers", version="2.1.0")
+app = FastAPI(title="Gnomode — Robinhood Early Buyers", version="2.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,6 +58,9 @@ async def _start_background() -> None:
     asyncio.create_task(token_index.run_refresh_loop())
     asyncio.create_task(watch_runner.run_loop())
     asyncio.create_task(followup_runner.run_loop())
+    from .followup_bot import followup_bot
+
+    asyncio.create_task(followup_bot.run_loop())
     asyncio.create_task(gnome_banter.run_loop())
 
 
@@ -284,7 +287,7 @@ async def followup_raybot_webhook(request: Request):
 
 
 async def _handle_raybot_event(payload: dict, event_type: str) -> None:
-    from .followup import estimate_token_mcap, should_alert_deal
+    from .followup import alert_kwargs_from_config, estimate_token_mcap, should_alert_deal
     from .telegram import (
         resolve_chat_id,
         resolve_topic_id,
@@ -335,8 +338,8 @@ async def _handle_raybot_event(payload: dict, event_type: str) -> None:
         if not should_alert_deal(
             deal.deal_index,
             deal.mcap_at_buy,
-            max_mcap_alert=cfg.max_mcap_alert,
-            alert_on_deals=list(cfg.alert_on_deals or [2, 3]),
+            bought_usd=deal.bought_usd,
+            **alert_kwargs_from_config(cfg),
         ):
             continue
         chat = resolve_chat_id(cfg.telegram_chat_id)

@@ -4,10 +4,15 @@ type FollowupConfig = {
   enabled: boolean
   interval_sec: number
   max_mcap_alert: number
+  min_mcap_alert: number | null
+  min_bought_usd: number | null
+  max_bought_usd: number | null
   alert_on_deals: number[]
   max_deals: number
+  buys_only: boolean
   telegram_chat_id: string
   telegram_topic_id: string
+  bot_commands_enabled: boolean
   raybot_enabled: boolean
   ingest_from_watch: boolean
 }
@@ -23,6 +28,8 @@ type FollowupStatus = {
   enabled: boolean
   running: boolean
   telegram_configured: boolean
+  bot_commands_enabled: boolean
+  bot_polling: boolean
   raybot_configured: boolean
   next_run_ts: number | null
   last_run_ts: number | null
@@ -60,10 +67,15 @@ const DEFAULT_CFG: FollowupConfig = {
   enabled: false,
   interval_sec: 300,
   max_mcap_alert: 15000,
+  min_mcap_alert: null,
+  min_bought_usd: null,
+  max_bought_usd: null,
   alert_on_deals: [2, 3],
   max_deals: 3,
+  buys_only: true,
   telegram_chat_id: '',
   telegram_topic_id: '',
+  bot_commands_enabled: true,
   raybot_enabled: false,
   ingest_from_watch: true,
 }
@@ -78,6 +90,17 @@ function fmtNum(n: number | null | undefined): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
+}
+
+function numOrEmpty(v: number | null | undefined): string {
+  return v == null || Number.isNaN(v) ? '' : String(v)
+}
+
+function parseOptional(raw: string): number | null {
+  const t = raw.trim()
+  if (!t) return null
+  const n = Number(t)
+  return Number.isFinite(n) ? n : null
 }
 
 export default function FollowupPage() {
@@ -145,9 +168,9 @@ export default function FollowupPage() {
         <p className="brand">gnomode</p>
         <h1>Follow-up кошельков</h1>
         <p className="lede">
-          Первая сделка на низком mcap → таблица → алерт на 2-й/3-й новый токен
-          только при низком mcap. Высокий mcap — без уведомления. Опционально
-          RayBot (EVM) с фильтром MC.
+          Свой Telegram-бот (без RayBot): первая сделка на низком mcap → таблица →
+          алерт на 2-й/3-й новый токен только при низком mcap. Команды:{' '}
+          <code>/status</code> <code>/filters</code> <code>/on</code> <code>/off</code>.
         </p>
       </header>
 
@@ -164,10 +187,10 @@ export default function FollowupPage() {
             </div>
           </div>
           <div>
-            <span className="muted">Telegram / RayBot</span>
+            <span className="muted">Telegram-бот</span>
             <div>
-              {status?.telegram_configured ? 'TG ok' : 'TG —'} ·{' '}
-              {status?.raybot_configured ? 'Ray ok' : 'Ray —'}
+              {status?.telegram_configured ? 'token ok' : 'нет токена'} ·{' '}
+              {status?.bot_polling ? 'polling' : 'idle'}
             </div>
           </div>
           <div>
@@ -183,7 +206,7 @@ export default function FollowupPage() {
       </section>
 
       <section className="panel input-panel">
-        <h2 className="section-title">Расписание и фильтры</h2>
+        <h2 className="section-title">Расписание и фильтры (нативные)</h2>
         <div className="row">
           <label className="field check-field">
             <span className="muted">Follow-up</span>
@@ -210,16 +233,27 @@ export default function FollowupPage() {
             </label>
           </label>
           <label className="field check-field">
-            <span className="muted">RayBot</span>
+            <span className="muted">Команды бота</span>
             <label className="check-inline">
               <input
                 type="checkbox"
-                checked={cfg.raybot_enabled}
+                checked={cfg.bot_commands_enabled}
                 onChange={(e) =>
-                  setCfg({ ...cfg, raybot_enabled: e.target.checked })
+                  setCfg({ ...cfg, bot_commands_enabled: e.target.checked })
                 }
               />
-              Sync EVM
+              /status /filters…
+            </label>
+          </label>
+          <label className="field check-field">
+            <span className="muted">Только buys</span>
+            <label className="check-inline">
+              <input
+                type="checkbox"
+                checked={cfg.buys_only}
+                onChange={(e) => setCfg({ ...cfg, buys_only: e.target.checked })}
+              />
+              buys_only
             </label>
           </label>
           <label className="field compact">
@@ -244,6 +278,42 @@ export default function FollowupPage() {
                   ...cfg,
                   max_mcap_alert: Number(e.target.value) || 0,
                 })
+              }
+            />
+          </label>
+          <label className="field compact">
+            <span className="muted">Min mcap, $</span>
+            <input
+              type="number"
+              value={numOrEmpty(cfg.min_mcap_alert)}
+              min={0}
+              placeholder="пусто = off"
+              onChange={(e) =>
+                setCfg({ ...cfg, min_mcap_alert: parseOptional(e.target.value) })
+              }
+            />
+          </label>
+          <label className="field compact">
+            <span className="muted">Min buy USD</span>
+            <input
+              type="number"
+              value={numOrEmpty(cfg.min_bought_usd)}
+              min={0}
+              placeholder="off"
+              onChange={(e) =>
+                setCfg({ ...cfg, min_bought_usd: parseOptional(e.target.value) })
+              }
+            />
+          </label>
+          <label className="field compact">
+            <span className="muted">Max buy USD</span>
+            <input
+              type="number"
+              value={numOrEmpty(cfg.max_bought_usd)}
+              min={0}
+              placeholder="off"
+              onChange={(e) =>
+                setCfg({ ...cfg, max_bought_usd: parseOptional(e.target.value) })
               }
             />
           </label>
@@ -279,6 +349,10 @@ export default function FollowupPage() {
             />
           </label>
         </div>
+        <p className="muted tiny">
+          Алерт только на deal #2/#3 при mcap ≤ max (и ≥ min, если задан). Высокий
+          mcap — запись без уведомления. В Telegram: /help
+        </p>
         <div className="row">
           <button
             type="button"
@@ -313,13 +387,6 @@ export default function FollowupPage() {
           <button
             type="button"
             className="ghost"
-            onClick={() => void post('/api/followup/test-raybot')}
-          >
-            Проверить RayBot
-          </button>
-          <button
-            type="button"
-            className="ghost"
             onClick={() => void post('/api/followup/reset-counters')}
           >
             Сброс счётчиков
@@ -349,7 +416,6 @@ export default function FollowupPage() {
                 <th>Статус</th>
                 <th>Сделок</th>
                 <th>1-й mcap</th>
-                <th>RayBot</th>
                 <th>История</th>
               </tr>
             </thead>
@@ -370,7 +436,6 @@ export default function FollowupPage() {
                   <td>{w.status}</td>
                   <td>{w.deal_count}</td>
                   <td>{fmtNum(w.first_mcap)}</td>
-                  <td>{w.raybot_synced ? 'yes' : '—'}</td>
                   <td className="muted tiny">
                     {w.deals
                       .map(
