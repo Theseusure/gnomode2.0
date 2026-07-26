@@ -1,40 +1,54 @@
 # Gnomode — сканер токенов Robinhood Chain
 
-Веб-приложение для анализа токенов на **Robinhood Chain** (chain ID `4663`). Две основные функции:
+Веб-приложение для анализа токенов на **Robinhood Chain** (chain ID `4663`). Интерфейс на русском. Три основные функции:
 
-1. **Screener** — отбор токенов по фильтрам в духе DexScreener (ликвидность, возраст пары, трейдеры, market cap).
-2. **Early buyers** — поиск кошельков, которые купили токен, пока market cap был ниже порога (по умолчанию **$15 000**).
+1. **Скринер** — отбор токенов по фильтрам (ликвидность, возраст пары, трейдеры, market cap) из in-memory индекса за 24ч.
+2. **Early buyers** — поиск кошельков, купивших токен при низком mcap (по умолчанию **$15 000**), с фильтрами кошельков.
+3. **Автопарс** — по расписанию: скринер → парсинг → дедуп → алерты в **Telegram** (чат / топик форума).
+
+Репозиторий: [github.com/Theseusure/gnomode2.0](https://github.com/Theseusure/gnomode2.0)
 
 ---
 
 ## Возможности
 
-### Screener
+### Скринер
 
-- Сканирует каталог ERC-20 через Blockscout.
-- Обогащает метрики через DexScreener (`/tokens/v1/robinhood/...`).
-- Для каждого токена выбирает лучшую Robinhood-пару (по ликвидности).
-- Отсекает honeypot через **GMGN token security** (тот же источник, что на gmgn.ai):
-  `is_honeypot` / высокий buy·sell tax. Если GMGN не знает вердикт — лёгкий fallback
-  по DexScreener (нет продаж при покупках). Быстро: десятки токенов за несколько секунд.
+- Держит **индекс токенов за последние 24ч** (новые пулы + обогащение метрик); UI показывает статус индекса.
+- Фильтры применяются к индексу локально (быстро после прогрева).
+- Отсекает honeypot через **GMGN token security** (с лёгким fallback по DexScreener).
 - Локальные фильтры (min/max, пустое поле = без ограничения):
   - **liquidity** — `liquidity.usd`
-  - **pair age** — возраст пары в часах от `pairCreatedAt`
-  - **traders** — `txns.h24.buys + sells` (прокси числа транзакций, не уникальные кошельки)
+  - **pair age** — возраст пары в часах
+  - **traders** — `txns.h24.buys + sells` (прокси активности, не уникальные кошельки)
   - **mcap** — `marketCap`, иначе `fdv`
 - Сортировка: liquidity / market_cap / traders / pair_age.
-- Результаты можно экспортировать в CSV.
-- Выбранные токены можно перенести во вкладку **Early buyers**.
-- Состояние вкладок сохраняется при переключении (таблица не сбрасывается).
+- Пресеты фильтров, экспорт CSV, перенос выбранных токенов во вкладку Early buyers.
+- Состояние вкладок сохраняется при переключении.
 
 ### Early buyers
 
-- Принимает один или несколько адресов токенов.
-- Перед тяжёлым replay проверяет honeypot через GMGN (можно отключить в UI).
-- Находит пулы Uniswap **V2 / V3 / V4** (DexScreener + on-chain factories для WETH/USDG).
-- Проигрывает историю свопов до пересечения порога mcap.
-- Собирает EOA-покупателей: объём в токенах, USD≈, mcap на первой покупке, число покупок.
-- Экспорт в CSV, ссылки на GMGN и Blockscout.
+- Один или несколько адресов токенов.
+- Перед тяжёлым replay — проверка honeypot через GMGN (можно отключить).
+- Пулы Uniswap **V2 / V3 / V4** (DexScreener + on-chain factories WETH/USDG).
+- Replay свопов до пересечения порога mcap → EOA early buyers.
+- **Фильтры кошельков** (опционально):
+  - баланс ETH (min/max);
+  - время холда позиции (min/max);
+  - число различных токенов за 7д (min/max, через Blockscout).
+- Лог пайплайна в UI, экспорт CSV, ссылки на GMGN / Blockscout.
+
+### Автопарс (Watch)
+
+- Конфиг хранится на сервере (`backend/app/data/watch.json`, не в git).
+- По интервалу (или «Запустить сейчас»):
+  1. скрининг по сохранённым фильтрам токенов;
+  2. парсинг до `max_tokens_per_cycle` токенов с фильтрами кошельков;
+  3. дедуп пар **кошелёк + токен** (`watch_seen.json`);
+  4. **сразу после каждого токена** — отправка новых кошельков в Telegram.
+- **Догон** после долгого простоя (≥ 1 ч): сужает `max_pair_age` до окна простоя (макс. 24ч). Короткие паузы / reload API догон не запускают.
+- Управление в UI: вкл/выкл, интервал, лимит токенов, фильтры, стоп, сброс счётчиков, очистка дедупа, проверка Telegram, живой лог.
+- Гном в чате: «За работу!» при старте, периодические фразы (бантер), сообщение при падении/остановке процесса.
 
 ---
 
@@ -44,7 +58,8 @@
 |------|------------|
 | Backend | Python 3.12+, FastAPI, web3.py, httpx, Pydantic |
 | Frontend | Vite, React 19, TypeScript |
-| Данные | публичный Robinhood RPC, DexScreener, Blockscout (без Alchemy) |
+| Данные | публичный Robinhood RPC, DexScreener, Blockscout, GMGN |
+| Алерты | Telegram Bot API |
 
 ---
 
@@ -54,8 +69,11 @@
 
 ```bash
 cp .env.example .env
-# при необходимости отредактируйте .env
+# обязательны для автопарса: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# опционально: TELEGRAM_TOPIC_ID (топик форума)
 ```
+
+После смены `.env` перезапустите API (`./scripts/dev-api.sh`). Кнопка «Проверить Telegram» в UI делает `getMe` + тестовый пинг.
 
 ### 2. Backend
 
@@ -70,6 +88,12 @@ chmod +x scripts/*.sh
 API: [http://127.0.0.1:8000](http://127.0.0.1:8000)  
 Health: [http://127.0.0.1:8000/api/health](http://127.0.0.1:8000/api/health)
 
+Тесты:
+
+```bash
+cd backend && ../.venv/bin/pytest -q
+```
+
 ### 3. Frontend (второй терминал)
 
 ```bash
@@ -77,13 +101,11 @@ Health: [http://127.0.0.1:8000/api/health](http://127.0.0.1:8000/api/health)
 ```
 
 UI: [http://127.0.0.1:5173](http://127.0.0.1:5173)  
-Vite проксирует `/api` → `http://127.0.0.1:8000`.
+Vite слушает `127.0.0.1:5173` и проксирует `/api` → `http://127.0.0.1:8000`.
 
-> Если в консоли Vite `ECONNREFUSED 127.0.0.1:8000` — backend не запущен. Сначала поднимите API.
+> Если в консоли Vite `ECONNREFUSED 127.0.0.1:8000` — backend не запущен.
 
-### Production-режим (один процесс)
-
-API раздаёт собранный фронт из `frontend/dist`:
+### Production (один процесс)
 
 ```bash
 cd frontend && npm install && npm run build && cd ..
@@ -97,66 +119,86 @@ PYTHONPATH=backend uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
-| `RPC_URL` | `https://rpc.mainnet.chain.robinhood.com` | EVM JSON-RPC endpoint |
+| `RPC_URL` | публичный RH RPC | EVM JSON-RPC |
 | `BLOCKSCOUT_API_KEY` | пусто | Опциональный ключ Blockscout Pro |
-| `MCAP_THRESHOLD` | `15000` | Порог mcap (USD) для Early buyers |
-| `LOG_CHUNK_SIZE` | `100000` | Размер блока для батча `eth_getLogs` |
-| `RPC_CONCURRENCY` | `24` | Параллелизм RPC-запросов |
-| `HONEYPOT_SIM_WHALE` | пусто | EOА с ≥0.05 ETH для eth_call симуляции honeypot; иначе auto |
-| `HOST` | `0.0.0.0` | Хост API |
-| `PORT` | `8000` | Порт API |
+| `MCAP_THRESHOLD` | `15000` | Порог mcap (USD) по умолчанию |
+| `LOG_CHUNK_SIZE` | `100000` | Размер окна `eth_getLogs` |
+| `RPC_CONCURRENCY` | `6` | Параллелизм RPC (на публичной ноде лучше 2–6) |
+| `HONEYPOT_SIM_WHALE` | пусто | EOА для eth_call honeypot-симуляции |
+| `HOST` / `PORT` | `0.0.0.0` / `8000` | Слушатель API |
+| `TELEGRAM_BOT_TOKEN` | пусто | Токен бота (@BotFather) |
+| `TELEGRAM_CHAT_ID` | пусто | Chat id (или задайте в UI автопарса) |
+| `TELEGRAM_TOPIC_ID` | пусто | `message_thread_id` топика форума |
+| `WATCH_*_PATH` | `backend/app/data/…` | Пути `watch.json` / `watch_seen.json` / `watch_state.json` |
 
-### Когда публичный RPC упирается в лимиты
+### Telegram
 
-1. **Public RPC** — бесплатно, для лёгкой нагрузки.
-2. **[dRPC](https://drpc.org/)** — свой endpoint в `RPC_URL`.
-3. **[QuickNode](https://www.quicknode.com/)** — удобнее для длинных `getLogs`.
-4. **Blockscout Pro** — `BLOCKSCOUT_API_KEY` для метаданных / fallback по трансферам.
+1. Создайте бота у [@BotFather](https://t.me/BotFather), вставьте токен в `.env`.
+2. Напишите боту `/start` (личный чат) **или** добавьте бота в группу/форум.
+3. Укажите числовой `TELEGRAM_CHAT_ID` (для супергрупп обычно `-100…`).
+4. Для топика форума — `TELEGRAM_TOPIC_ID`.
+5. В UI: **Автопарс → Проверить Telegram**.
+
+`chat not found` / `401 Unauthorized` — бот не видит чат или неверный/отозванный токен.
+
+### Когда публичный RPC упирается в 429
+
+1. Public RPC — для лёгкой нагрузки; при автопарсе 429 + retry — норма.
+2. Снизьте `RPC_CONCURRENCY` (например `2–3`) и/или `max_tokens_per_cycle`.
+3. [dRPC](https://drpc.org/) / [QuickNode](https://www.quicknode.com/) — свой `RPC_URL`.
+4. Blockscout Pro — `BLOCKSCOUT_API_KEY` для метаданных и метрик кошельков.
 
 ```env
 RPC_URL=https://YOUR_ENDPOINT.robinhood-mainnet.quiknode.pro/YOUR_TOKEN/
+RPC_CONCURRENCY=6
 ```
 
 ---
 
 ## Как это работает
 
-### Screener
+### Скринер / индекс
 
 ```text
-фильтры → каталог Blockscout (ERC-20)
-       → батч-обогащение DexScreener
-       → лучшая RH-пара по ликвидности
-       → локальные фильтры
-       → сортировка / truncate
+фон: scan новых пулов → enrich → индекс 24ч
+UI/API: фильтры → срез индекса → honeypot (GMGN) → сортировка
 ```
-
-Публичного filtered-catalog API у DexScreener для Robinhood нет, поэтому каталог берётся с Blockscout, а метрики — с DexScreener.
 
 ### Early buyers
 
-1. Резолв пулов Uniswap V2/V3/V4 (DexScreener + factories WETH/USDG).
-2. Стрим `Swap` с рождения пула; остановка, когда mcap ≥ порога.
-3. Резолв покупателей через `Transfer` токена (PoolManager / routers → кошелёк).
-4. `mcap = price_usd × totalSupply`.
-5. Оставляем кошельки с покупкой при `mcap < threshold`.
-6. Агрегация: токены, USD≈, mcap на первой покупке, число покупок.
+1. Резолв пулов V2/V3/V4.
+2. Стрим свопов с рождения пула; стоп при mcap ≥ порога.
+3. Резолв покупателей через `Transfer`.
+4. Фильтры кошельков: баланс → холд → токены за 7д.
+5. Агрегация и выдача в job.
 
-Большинство мемкоинов на Robinhood торгуются на **Uniswap V4** (id пула — `bytes32`, не адрес пары).
+### Автопарс
+
+```text
+расписание / Run now
+  → screen(filters) [:max_tokens]
+  → для каждого токена:
+       parse + wallet filters
+       → новые (не в seen) → Telegram сразу
+       → mark_seen
+  → следующий цикл через interval_sec
+```
+
+Большинство мемкоинов на Robinhood торгуются на **Uniswap V4** (id пула — `bytes32`).
 
 ---
 
 ## API
 
-Все долгие операции — async jobs: `POST` создаёт задачу, `GET` поллит статус.
+Долгие операции Early buyers / Screener — async jobs: `POST` создаёт задачу, `GET` поллит статус.
 
-### Health
+### Health / индекс
 
 ```http
-GET /api/health
+GET  /api/health
+GET  /api/index/status
+POST /api/index/refresh
 ```
-
-Ответ: `ok`, `chain_id`, `rpc_url`, `mcap_threshold`.
 
 ### Early buyers
 
@@ -167,7 +209,13 @@ Content-Type: application/json
 {
   "tokens": ["0x…"],
   "mcap_threshold": 15000,
-  "exclude_honeypots": true
+  "exclude_honeypots": true,
+  "min_wallet_balance_eth": 0.01,
+  "max_wallet_balance_eth": null,
+  "min_hold_time_minutes": 1,
+  "max_hold_time_minutes": null,
+  "min_tokens_traded_7d": 2,
+  "max_tokens_traded_7d": 5
 }
 ```
 
@@ -176,7 +224,7 @@ GET /api/parse/{job_id}
 ```
 
 Статусы: `queued` → `running` → `done` | `error`.  
-В ответе: `progress`, `results[]` с `buyers`, `pool`, `error`.
+В ответе: `progress`, `log[]`, `results[]` с `buyers`.
 
 ### Screener
 
@@ -200,22 +248,24 @@ Content-Type: application/json
 }
 ```
 
-| Поле | Тип | Описание |
-|------|-----|----------|
-| `min_liq` / `max_liq` | number \| null | Ликвидность USD |
-| `min_mcap` / `max_mcap` | number \| null | Market cap USD |
-| `min_traders` / `max_traders` | number \| null | Txns 24h (buys+sells) |
-| `min_pair_age_hours` / `max_pair_age_hours` | number \| null | Возраст пары |
-| `sort_by` | string | `liquidity` \| `market_cap` \| `traders` \| `pair_age` |
-| `sort_order` | string | `asc` \| `desc` |
-| `max_results` | int | 1–2000, по умолчанию 500 |
-| `exclude_honeypots` | bool | По умолчанию `true` — скрывать honeypot (GMGN) |
-
 ```http
 GET /api/screen/{job_id}
 ```
 
-В `results[]`: адрес, symbol, price, liquidity, mcap, traders_24h, pair_age_hours, ссылки DexScreener/GMGN.
+### Автопарс
+
+| Метод | Путь | Описание |
+|-------|------|----------|
+| `GET` | `/api/watch` | Текущий конфиг |
+| `PUT` | `/api/watch` | Сохранить конфиг (будит планировщик) |
+| `GET` | `/api/watch/status` | Статус, счётчики, лог, next_run |
+| `POST` | `/api/watch/run` | Запустить цикл сейчас |
+| `POST` | `/api/watch/stop` | Принудительная остановка цикла |
+| `POST` | `/api/watch/reset-counters` | Сброс счётчиков UI |
+| `POST` | `/api/watch/test-telegram` | getMe + пинг в чат/топик |
+| `POST` | `/api/watch/clear-seen` | Очистить дедуп |
+
+Конфиг (`PUT`) включает `enabled`, `interval_sec` (60–86400), `max_tokens_per_cycle` (1–2000), chat/topic, `gnome_banter_enabled`, блоки `screen` и `wallet`.
 
 ---
 
@@ -223,29 +273,31 @@ GET /api/screen/{job_id}
 
 ```text
 gnomode 2.0/
-├── backend/app/
-│   ├── main.py          # FastAPI: /api/parse, /api/screen, /api/health
-│   ├── screener.py      # Screener: Blockscout + DexScreener + фильтры
-│   ├── gmgn.py          # GMGN token security (honeypot / tax)
-│   ├── goplus.py        # GoPlus checks (legacy fallback)
-│   ├── honeypot_sim.py  # On-chain buy→sell eth_call (optional / legacy)
-│   ├── security.py      # Combined honeypot gate (GMGN + Dex fallback)
-│   ├── screen_jobs.py   # In-memory jobs для screener
-│   ├── replay.py        # Replay свопов / early buyers
-│   ├── pools.py         # Поиск пулов DexScreener + factories
-│   ├── jobs.py          # In-memory jobs для parse
-│   ├── blockscout.py    # Blockscout helpers
-│   ├── chain.py         # RPC client + shared httpx
-│   ├── models.py        # Pydantic-модели
-│   ├── config.py        # Settings из .env
-│   └── constants.py     # Адреса контрактов RH / Uniswap
+├── backend/
+│   ├── app/
+│   │   ├── main.py            # FastAPI routes
+│   │   ├── watch.py           # Планировщик автопарса
+│   │   ├── watch_store.py     # JSON: config / seen / last_success
+│   │   ├── telegram.py        # Bot API (send, getMe, test)
+│   │   ├── gnome_phrases.py   # Фразы гнома (~134)
+│   │   ├── gnome_banter.py    # Периодический бантер
+│   │   ├── gnome_lifecycle.py # «За работу!» / смерть
+│   │   ├── token_index.py     # Индекс токенов 24ч
+│   │   ├── screener.py
+│   │   ├── replay.py          # Early buyers
+│   │   ├── wallet_metrics.py  # Баланс / холд / tokens 7d
+│   │   ├── pools.py / chain.py / blockscout.py / gmgn.py / …
+│   │   ├── models.py / config.py / constants.py
+│   │   └── data/              # runtime JSON (gitignore)
+│   ├── tests/
+│   └── pytest.ini
 ├── frontend/src/
-│   ├── App.tsx          # Навигация Early buyers / Screener
-│   ├── ScreenerPage.tsx # UI screener
-│   └── App.css          # Стили
-├── scripts/
-│   ├── dev-api.sh
-│   └── dev-ui.sh
+│   ├── App.tsx                # Early buyers + вкладки
+│   ├── ScreenerPage.tsx
+│   ├── WatchPage.tsx          # Автопарс
+│   ├── FilterPresets.tsx
+│   └── App.css
+├── scripts/dev-api.sh | dev-ui.sh
 ├── .env.example
 └── README.md
 ```
@@ -254,20 +306,23 @@ gnomode 2.0/
 
 ## Интерфейс
 
-- Вкладки **Early buyers** и **Screener** не размонтируются при переключении — результаты остаются на месте.
-- Прогресс-бар во время долгих jobs.
-- Таблицы с сортировкой по колонкам, текстовым фильтром и CSV-экспортом.
-- Из Screener: чекбоксы → **Use in Early buyers** заполняет textarea адресами и переключает вкладку.
+- Вкладки **Early buyers**, **Скринер**, **Автопарс** не размонтируются — результаты и лог не сбрасываются.
+- Прогресс и пошаговый лог во время долгих операций.
+- Таблицы: сортировка, текстовый фильтр, CSV.
+- Из скринера: чекбоксы → перенос адресов в Early buyers.
+- Автопарс: статус цикла, следующий запуск, лог, кнопки стоп / Telegram / дедуп.
 
 ---
 
 ## Важные замечания
 
-- Фильтр **traders** = сумма buy/sell txns за 24h из DexScreener, не число уникальных кошельков.
-- Если первая on-chain цена уже даёт mcap ≥ порога, список early buyers будет пустым — это ожидаемо.
-- Публичный RPC может быть медленным на длинной истории; для тяжёлых токенов лучше dRPC/QuickNode.
-- USD для ETH/WETH берётся из DexScreener (fallback CoinGecko); USDG ≈ $1.
-- Jobs хранятся **в памяти процесса** — после рестарта API старые `job_id` пропадают.
+- **traders** = сумма buy/sell txns за 24h, не уникальные кошельки.
+- Фильтр **токенов за 7д** очень жёсткий: early buyer часто имеет 1 токен (текущий) или >5 у активных — из‑за этого автопарс может находить 0 кош. при ненулевом числе early buyers.
+- Если первая on-chain цена уже даёт mcap ≥ порога — список early buyers пуст (ожидаемо).
+- Публичный RPC: `429 Too Many Requests` + retry — нормальная картина под нагрузкой.
+- Parse/screen jobs — **в памяти процесса**; после рестарта API старые `job_id` пропадают.
+- Состояние автопарса (конфиг, seen, last_success) — на диске в `backend/app/data/`.
+- Секреты только в `.env` (не коммитить).
 
 ---
 
