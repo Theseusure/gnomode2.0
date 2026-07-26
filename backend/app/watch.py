@@ -692,6 +692,12 @@ class WatchRunner:
                     seen.add(f"{b.wallet.lower()}:{b.token.lower()}")
                 sent_total += len(sent)
                 new_total += len(sent)
+                try:
+                    from .followup import followup_runner
+
+                    await followup_runner.ingest_from_watch(sent)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Follow-up ingest failed: %s", exc)
             self._last_buyers_sent = sent_total
             self._last_buyers_new = new_total
             partial = len(new_buyers) - len(sent)

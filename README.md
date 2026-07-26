@@ -1,12 +1,13 @@
 # Gnomode — сканер токенов Robinhood Chain
 
-Веб-приложение для анализа токенов на **Robinhood Chain** (chain ID `4663`). Интерфейс на русском. Три основные функции:
+Веб-приложение для анализа токенов на **Robinhood Chain** (chain ID `4663`). Интерфейс на русском. Четыре основные функции:
 
 1. **Скринер** — отбор токенов по фильтрам (ликвидность, возраст пары, трейдеры, market cap) из in-memory индекса за 24ч.
 2. **Early buyers** — поиск кошельков, купивших токен при низком mcap (по умолчанию **$15 000**), с фильтрами кошельков.
 3. **Автопарс** — по расписанию: скринер → парсинг → дедуп → алерты в **Telegram** (чат / топик форума).
+4. **Follow-up** — таблица early buyers (1 токен = 1 сделка) → алерт на **2-й/3-й новый токен** только при низком mcap; опциональный sync в **RayBot** (EVM).
 
-Репозиторий: [github.com/Theseusure/gnomode2.0](https://github.com/Theseusure/gnomode2.0)
+Репозиторий: [github.com/bunt13/gnomode](https://github.com/bunt13/gnomode)
 
 ---
 
@@ -52,6 +53,16 @@
 - Управление в UI: вкл/выкл, интервал, лимит токенов, фильтры, стоп, сброс счётчиков, очистка дедупа, проверка Telegram, живой лог.
 - Гном в чате: «За работу!» при старте, периодические фразы (бантер), сообщение при падении/остановке процесса.
 
+### Follow-up
+
+- После успешной отправки early buyer из автопарса кошелёк попадает в **SQLite** (`backend/app/data/followup.db`, WAL).
+- **Один токен = одна сделка.** Считаются distinct-токены: 1-я (discovery), затем 2-я / 3-я.
+- Telegram-алерт только если `deal_index ∈ {2,3}` и `mcap_at_buy ≤ max_mcap_alert`. Высокий mcap — запись без уведомления.
+- Фоновый poll Blockscout (`/addresses/{wallet}/token-transfers`) + оценка mcap через DexScreener.
+- Опционально **RayBot** (ключи `RAYBOT_API_USER` / `RAYBOT_API_TOKEN` из `/api` в боте): add wallet + EVM-фильтры `evm_buys`, `evm_mc_trade_max` (логика как в [docs.raybot.app](https://docs.raybot.app/start)). Кошельки RH ведутся в RayBot через EVM.
+- Опциональный webhook: `POST /api/followup/webhook/raybot` (нужен публичный HTTPS + `RAYBOT_WEBHOOK_AUTH`).
+- UI: вкладка **Follow-up** — конфиг, лог, таблица кошельков/сделок.
+
 ---
 
 ## Стек
@@ -73,8 +84,8 @@
 ### 1. Клон и `.env`
 
 ```bash
-git clone https://github.com/Theseusure/gnomode2.0.git
-cd gnomode2.0
+git clone https://github.com/bunt13/gnomode.git
+cd gnomode
 cp .env.example .env
 chmod +x scripts/*.sh
 ```
@@ -354,7 +365,21 @@ GET /api/screen/{job_id}
 | `POST` | `/api/watch/test-telegram` | getMe + пинг в чат/топик |
 | `POST` | `/api/watch/clear-seen` | Очистить дедуп |
 
-Конфиг (`PUT`) включает `enabled`, `interval_sec` (60–86400), `max_tokens_per_cycle` (1–2000), chat/topic, `gnome_banter_enabled`, блоки `screen` и `wallet`.
+### Follow-up
+
+| Метод | Путь | Описание |
+|-------|------|----------|
+| `GET` | `/api/followup` | Конфиг |
+| `PUT` | `/api/followup` | Сохранить конфиг |
+| `GET` | `/api/followup/status` | Статус цикла / лог |
+| `GET` | `/api/followup/wallets` | Таблица кошельков + deals |
+| `POST` | `/api/followup/run` | Запустить цикл сейчас |
+| `POST` | `/api/followup/stop` | Стоп |
+| `POST` | `/api/followup/test-telegram` | Пинг Telegram |
+| `POST` | `/api/followup/test-raybot` | Проверка RayBot API |
+| `POST` | `/api/followup/webhook/raybot` | Webhook от RayBot (опционально) |
+
+Конфиг: `enabled`, `interval_sec`, `max_mcap_alert`, `alert_on_deals` (по умолчанию `[2,3]`), `max_deals`, chat/topic, `raybot_enabled`, `ingest_from_watch`.
 
 ---
 
@@ -367,6 +392,9 @@ gnomode 2.0/
 │   │   ├── main.py            # FastAPI routes
 │   │   ├── watch.py           # Планировщик автопарса
 │   │   ├── watch_store.py     # JSON: config / seen / last_success
+│   │   ├── followup.py        # Follow-up: 2-й/3-й токен @ low mcap
+│   │   ├── followup_store.py  # SQLite wallets/deals
+│   │   ├── raybot.py          # RayBot API (EVM filters / sync)
 │   │   ├── telegram.py        # Bot API (send, getMe, test)
 │   │   ├── gnome_phrases.py   # Фразы гнома (~134)
 │   │   ├── gnome_banter.py    # Периодический бантер
@@ -377,13 +405,14 @@ gnomode 2.0/
 │   │   ├── wallet_metrics.py  # Баланс / холд / tokens 7d
 │   │   ├── pools.py / chain.py / blockscout.py / gmgn.py / …
 │   │   ├── models.py / config.py / constants.py
-│   │   └── data/              # runtime JSON (gitignore)
+│   │   └── data/              # runtime JSON + followup.db (gitignore)
 │   ├── tests/
 │   └── pytest.ini
 ├── frontend/src/
 │   ├── App.tsx                # Early buyers + вкладки
 │   ├── ScreenerPage.tsx
 │   ├── WatchPage.tsx          # Автопарс
+│   ├── FollowupPage.tsx       # Follow-up таблица
 │   ├── FilterPresets.tsx
 │   └── App.css
 ├── scripts/dev-api.sh | dev-ui.sh
@@ -395,7 +424,7 @@ gnomode 2.0/
 
 ## Интерфейс
 
-- Вкладки **Early buyers**, **Скринер**, **Автопарс** не размонтируются — результаты и лог не сбрасываются.
+- Вкладки **Early buyers**, **Скринер**, **Автопарс**, **Follow-up** не размонтируются — результаты и лог не сбрасываются.
 - Прогресс и пошаговый лог во время долгих операций.
 - Таблицы: сортировка, текстовый фильтр, CSV.
 - Из скринера: чекбоксы → перенос адресов в Early buyers.
@@ -417,4 +446,4 @@ gnomode 2.0/
 
 ## Лицензия / репозиторий
 
-Исходники: [github.com/Theseusure/gnomode2.0](https://github.com/Theseusure/gnomode2.0)
+Исходники: [github.com/bunt13/gnomode](https://github.com/bunt13/gnomode)

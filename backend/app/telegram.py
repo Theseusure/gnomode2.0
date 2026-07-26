@@ -138,6 +138,52 @@ def format_buyer_block(buyer: BuyerRow) -> str:
     return "\n".join(lines)
 
 
+def format_followup_deal(
+    *,
+    wallet: str,
+    token: str,
+    token_symbol: str,
+    deal_index: int,
+    mcap_at_buy: float | None,
+    bought_usd: float | None = None,
+) -> str:
+    """HTML block for 2nd/3rd new-token buy @ low mcap."""
+    sym = token_symbol or "TOKEN"
+    lines = [
+        f"<b>Follow-up · сделка #{deal_index}</b>",
+        f"<b>{sym}</b> · новый токен @ low mcap",
+        f"Token: <code>{token}</code>",
+        f"Wallet: <code>{wallet}</code>",
+        f"mcap@buy ${_fmt_num(mcap_at_buy)}"
+        + (f" · bought ${_fmt_num(bought_usd)}" if bought_usd is not None else ""),
+        f'<a href="https://gmgn.ai/robinhood/token/{token}">GMGN token</a> · '
+        f'<a href="https://gmgn.ai/robinhood/address/{wallet}">GMGN wallet</a>',
+    ]
+    return "\n".join(lines)
+
+
+async def send_followup_deal(
+    chat_id: str,
+    *,
+    wallet: str,
+    token: str,
+    token_symbol: str,
+    deal_index: int,
+    mcap_at_buy: float | None,
+    bought_usd: float | None = None,
+    topic_id: int | None = None,
+) -> None:
+    text = format_followup_deal(
+        wallet=wallet,
+        token=token,
+        token_symbol=token_symbol,
+        deal_index=deal_index,
+        mcap_at_buy=mcap_at_buy,
+        bought_usd=bought_usd,
+    )
+    await send_message(chat_id, text, topic_id=topic_id)
+
+
 def chunk_buyers(buyers: list[BuyerRow], *, header: str = "Watch alert") -> list[tuple[list[BuyerRow], str]]:
     """Split buyers into (chunk, html_message) pairs under Telegram size limits."""
     out: list[tuple[list[BuyerRow], str]] = []
