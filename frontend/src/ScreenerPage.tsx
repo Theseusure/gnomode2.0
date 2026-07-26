@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { FilterPresets } from './FilterPresets'
+import { loadJson, saveJson } from './session'
+
+const SCREEN_SESSION_KEY = 'gnomode.session.screener'
 
 type ScreenedToken = {
   address: string
@@ -163,20 +167,61 @@ type Props = {
   onUseInBuyers?: (addresses: string[]) => void
 }
 
+type ScreenSession = {
+  v: 1
+  filters: Filters
+  query: string
+  sortKey: TableSortKey
+  sortAsc: boolean
+  selected: string[]
+  job: ScreenJobResponse | null
+}
+
+function loadScreenSession(): ScreenSession | null {
+  const raw = loadJson<ScreenSession>(SCREEN_SESSION_KEY)
+  if (!raw || raw.v !== 1) return null
+  return raw
+}
+
 export default function ScreenerPage({ onUseInBuyers }: Props) {
-  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS)
-  const [job, setJob] = useState<ScreenJobResponse | null>(null)
+  const restored = useMemo(() => loadScreenSession(), [])
+  const [filters, setFilters] = useState<Filters>(
+    restored?.filters ? { ...DEFAULT_FILTERS, ...restored.filters } : DEFAULT_FILTERS,
+  )
+  const [job, setJob] = useState<ScreenJobResponse | null>(restored?.job ?? null)
   const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [query, setQuery] = useState('')
-  const [sortKey, setSortKey] = useState<TableSortKey>('liquidity_usd')
-  const [sortAsc, setSortAsc] = useState(false)
-  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [busy, setBusy] = useState(
+    () => restored?.job?.status === 'queued' || restored?.job?.status === 'running',
+  )
+  const [query, setQuery] = useState(restored?.query ?? '')
+  const [sortKey, setSortKey] = useState<TableSortKey>(
+    restored?.sortKey ?? 'liquidity_usd',
+  )
+  const [sortAsc, setSortAsc] = useState(restored?.sortAsc ?? false)
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(restored?.selected ?? []),
+  )
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null)
+
+  useEffect(() => {
+    saveJson(SCREEN_SESSION_KEY, {
+      v: 1,
+      filters,
+      query,
+      sortKey,
+      sortAsc,
+      selected: [...selected],
+      job,
+    } satisfies ScreenSession)
+  }, [filters, query, sortKey, sortAsc, selected, job])
 
   const setFilter = <K extends keyof Filters>(key: K, value: Filters[K]) => {
     setFilters((f) => ({ ...f, [key]: value }))
   }
+
+  const applyPreset = useCallback((values: Filters) => {
+    setFilters({ ...DEFAULT_FILTERS, ...values })
+  }, [])
 
   const keyOf = (addr: string) => addr.toLowerCase()
 
@@ -215,6 +260,25 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
     const t = setInterval(async () => {
       try {
         const res = await fetch(`/api/screen/${id}`)
+        if (res.status === 404) {
+          setJob((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  status: 'error',
+                  error:
+                    'Job lost after server restart. Showing last saved snapshot.',
+                  progress: {
+                    ...prev.progress,
+                    stage: 'error',
+                    message: 'Job lost — restored from session',
+                  },
+                }
+              : prev,
+          )
+          setBusy(false)
+          return
+        }
         if (!res.ok) throw new Error(await res.text())
         const data = (await res.json()) as ScreenJobResponse
         setJob(data)
@@ -383,6 +447,12 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
       </section>
 
       <section className="panel input-panel">
+        <FilterPresets
+          storageKey="gnomode.presets.tokens"
+          current={filters}
+          onApply={applyPreset}
+          disabled={busy}
+        />
         <div className="filter-grid">
           <label className="field">
             <span>Min liquidity ($)</span>

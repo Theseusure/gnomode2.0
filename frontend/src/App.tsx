@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import ScreenerPage from './ScreenerPage'
+import { FilterPresets } from './FilterPresets'
+import { loadJson, saveJson } from './session'
 import { useVisitedGmgnWallets } from './useVisitedGmgnWallets'
+
+const BUYERS_SESSION_KEY = 'gnomode.session.buyers'
+const APP_SESSION_KEY = 'gnomode.session.app'
 
 type BuyerRow = {
   wallet: string
@@ -13,6 +18,9 @@ type BuyerRow = {
   buys_count: number
   first_tx: string
   first_block: number
+  wallet_balance_eth?: number | null
+  hold_time_minutes?: number | null
+  tokens_traded_7d?: number | null
 }
 
 type TokenResult = {
@@ -39,16 +47,105 @@ type JobProgress = {
   current_token: string | null
 }
 
+type JobLogEntry = {
+  ts: number
+  stage: string
+  message: string
+  percent: number
+  token: string | null
+}
+
 type JobResponse = {
   job_id: string
   status: 'queued' | 'running' | 'done' | 'error'
   progress: JobProgress
+  log?: JobLogEntry[]
   results: TokenResult[]
   error: string | null
 }
 
-type SortKey = 'mcap_at_first_buy' | 'bought_usd' | 'bought_tokens' | 'buys_count' | 'wallet'
+function formatLogTime(ts: number) {
+  const d = new Date(ts * 1000)
+  return d.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
+type SortKey =
+  | 'mcap_at_first_buy'
+  | 'bought_usd'
+  | 'bought_tokens'
+  | 'buys_count'
+  | 'wallet'
+  | 'wallet_balance_eth'
+  | 'hold_time_minutes'
+  | 'tokens_traded_7d'
 type AppPage = 'buyers' | 'screener'
+
+type WalletFilters = {
+  min_wallet_balance_eth: string
+  max_wallet_balance_eth: string
+  min_hold_time_minutes: string
+  max_hold_time_minutes: string
+  min_tokens_traded_7d: string
+  max_tokens_traded_7d: string
+}
+
+type BuyersSession = {
+  v: 1
+  threshold: number
+  excludeHoneypots: boolean
+  walletFilters: WalletFilters
+  query: string
+  sortKey: SortKey
+  sortAsc: boolean
+  job: JobResponse | null
+}
+
+type AppSession = {
+  v: 1
+  page: AppPage
+  buyerInput: string
+}
+
+function loadBuyersSession(): BuyersSession | null {
+  const raw = loadJson<BuyersSession>(BUYERS_SESSION_KEY)
+  if (!raw || raw.v !== 1) return null
+  return raw
+}
+
+function slimJobForStorage(job: JobResponse | null): JobResponse | null {
+  if (!job) return null
+  const log = job.log ?? []
+  return {
+    ...job,
+    log: log.length > 80 ? log.slice(-80) : log,
+  }
+}
+
+const DEFAULT_WALLET_FILTERS: WalletFilters = {
+  min_wallet_balance_eth: '',
+  max_wallet_balance_eth: '',
+  min_hold_time_minutes: '',
+  max_hold_time_minutes: '',
+  min_tokens_traded_7d: '',
+  max_tokens_traded_7d: '',
+}
+
+/** Everything worth saving in a wallet-parsing preset. */
+type WalletPreset = WalletFilters & {
+  threshold: number
+  exclude_honeypots: boolean
+}
+
+function parseOpt(raw: string): number | null {
+  const t = raw.trim()
+  if (!t) return null
+  const n = Number(t)
+  return Number.isFinite(n) ? n : null
+}
 
 function shortAddr(a: string) {
   if (!a || a.length < 12) return a
@@ -68,6 +165,13 @@ function fmtNum(n: number, digits = 2) {
   return n.toLocaleString(undefined, { maximumFractionDigits: digits })
 }
 
+function fmtHold(minutes: number | null | undefined) {
+  if (minutes == null || !Number.isFinite(minutes)) return '—'
+  if (minutes < 60) return `${fmtNum(minutes, 1)}m`
+  if (minutes < 60 * 24) return `${fmtNum(minutes / 60, 1)}h`
+  return `${fmtNum(minutes / (60 * 24), 1)}d`
+}
+
 function exportCsv(rows: BuyerRow[]) {
   const header = [
     'wallet',
@@ -79,6 +183,9 @@ function exportCsv(rows: BuyerRow[]) {
     'buys_count',
     'first_tx',
     'first_block',
+    'wallet_balance_eth',
+    'hold_time_minutes',
+    'tokens_traded_7d',
   ]
   const lines = [header.join(',')]
   for (const r of rows) {
@@ -93,6 +200,9 @@ function exportCsv(rows: BuyerRow[]) {
         r.buys_count,
         r.first_tx,
         r.first_block,
+        r.wallet_balance_eth ?? '',
+        r.hold_time_minutes ?? '',
+        r.tokens_traded_7d ?? '',
       ].join(','),
     )
   }
@@ -112,15 +222,57 @@ function EarlyBuyersPage({
   input: string
   setInput: (v: string) => void
 }) {
-  const [threshold, setThreshold] = useState(15000)
-  const [excludeHoneypots, setExcludeHoneypots] = useState(true)
-  const [job, setJob] = useState<JobResponse | null>(null)
+  const restored = useMemo(() => loadBuyersSession(), [])
+  const [threshold, setThreshold] = useState(restored?.threshold ?? 15000)
+  const [excludeHoneypots, setExcludeHoneypots] = useState(
+    restored?.excludeHoneypots ?? true,
+  )
+  const [walletFilters, setWalletFilters] = useState<WalletFilters>(
+    restored?.walletFilters
+      ? { ...DEFAULT_WALLET_FILTERS, ...restored.walletFilters }
+      : DEFAULT_WALLET_FILTERS,
+  )
+  const [job, setJob] = useState<JobResponse | null>(restored?.job ?? null)
   const [error, setError] = useState<string | null>(null)
-  const [query, setQuery] = useState('')
-  const [sortKey, setSortKey] = useState<SortKey>('mcap_at_first_buy')
-  const [sortAsc, setSortAsc] = useState(true)
+  const [query, setQuery] = useState(restored?.query ?? '')
+  const [sortKey, setSortKey] = useState<SortKey>(
+    restored?.sortKey ?? 'mcap_at_first_buy',
+  )
+  const [sortAsc, setSortAsc] = useState(restored?.sortAsc ?? true)
   const { markVisited, clearVisited, isVisited, visitedCount } = useVisitedGmgnWallets()
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState(
+    () => restored?.job?.status === 'queued' || restored?.job?.status === 'running',
+  )
+
+  useEffect(() => {
+    saveJson(BUYERS_SESSION_KEY, {
+      v: 1,
+      threshold,
+      excludeHoneypots,
+      walletFilters,
+      query,
+      sortKey,
+      sortAsc,
+      job: slimJobForStorage(job),
+    } satisfies BuyersSession)
+  }, [threshold, excludeHoneypots, walletFilters, query, sortKey, sortAsc, job])
+
+  const setWalletFilter = <K extends keyof WalletFilters>(key: K, value: WalletFilters[K]) => {
+    setWalletFilters((f) => ({ ...f, [key]: value }))
+  }
+
+  const walletPreset: WalletPreset = {
+    ...walletFilters,
+    threshold,
+    exclude_honeypots: excludeHoneypots,
+  }
+
+  const applyWalletPreset = useCallback((values: WalletPreset) => {
+    const { threshold: t, exclude_honeypots: hp, ...rest } = values
+    setWalletFilters({ ...DEFAULT_WALLET_FILTERS, ...rest })
+    if (typeof t === 'number' && Number.isFinite(t)) setThreshold(t)
+    if (typeof hp === 'boolean') setExcludeHoneypots(hp)
+  }, [])
 
   const allBuyers = useMemo(() => {
     if (!job?.results) return []
@@ -147,7 +299,9 @@ function EarlyBuyersPage({
       if (typeof av === 'string' && typeof bv === 'string') {
         return av.localeCompare(bv) * mul
       }
-      return ((av as number) - (bv as number)) * mul
+      const an = av == null ? -Infinity : (av as number)
+      const bn = bv == null ? -Infinity : (bv as number)
+      return (an - bn) * mul
     })
   }, [allBuyers, query, sortKey, sortAsc])
 
@@ -157,6 +311,26 @@ function EarlyBuyersPage({
     const t = setInterval(async () => {
       try {
         const res = await fetch(`/api/parse/${id}`)
+        if (res.status === 404) {
+          // Server restarted — keep last snapshot from localStorage/state.
+          setJob((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  status: 'error',
+                  error:
+                    'Job lost after server restart. Showing last saved snapshot.',
+                  progress: {
+                    ...prev.progress,
+                    stage: 'error',
+                    message: 'Job lost — restored from session',
+                  },
+                }
+              : prev,
+          )
+          setBusy(false)
+          return
+        }
         if (!res.ok) throw new Error(await res.text())
         const data = (await res.json()) as JobResponse
         setJob(data)
@@ -191,6 +365,12 @@ function EarlyBuyersPage({
           tokens,
           mcap_threshold: threshold,
           exclude_honeypots: excludeHoneypots,
+          min_wallet_balance_eth: parseOpt(walletFilters.min_wallet_balance_eth),
+          max_wallet_balance_eth: parseOpt(walletFilters.max_wallet_balance_eth),
+          min_hold_time_minutes: parseOpt(walletFilters.min_hold_time_minutes),
+          max_hold_time_minutes: parseOpt(walletFilters.max_hold_time_minutes),
+          min_tokens_traded_7d: parseOpt(walletFilters.min_tokens_traded_7d),
+          max_tokens_traded_7d: parseOpt(walletFilters.max_tokens_traded_7d),
         }),
       })
       if (!res.ok) throw new Error(await res.text())
@@ -200,7 +380,7 @@ function EarlyBuyersPage({
       setError(e instanceof Error ? e.message : String(e))
       setBusy(false)
     }
-  }, [input, threshold, excludeHoneypots])
+  }, [input, threshold, excludeHoneypots, walletFilters])
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortAsc((v) => !v)
@@ -212,6 +392,12 @@ function EarlyBuyersPage({
 
   const progress = job?.progress.percent ?? 0
   const sortDir = sortAsc ? '↑' : '↓'
+  const jobLog = job?.log ?? []
+  const logEndRef = useRef<HTMLLIElement | null>(null)
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [jobLog.length, job?.progress.message])
 
   return (
     <>
@@ -264,6 +450,76 @@ function EarlyBuyersPage({
             {busy ? 'Parsing…' : 'Parse'}
           </button>
         </div>
+        <FilterPresets
+          storageKey="gnomode.presets.wallets"
+          current={walletPreset}
+          onApply={applyWalletPreset}
+          disabled={busy}
+        />
+        <div className="filter-grid">
+          <label className="field">
+            <span>Min balance (ETH)</span>
+            <input
+              type="number"
+              min={0}
+              step={0.001}
+              value={walletFilters.min_wallet_balance_eth}
+              onChange={(e) => setWalletFilter('min_wallet_balance_eth', e.target.value)}
+              placeholder="any"
+            />
+          </label>
+          <label className="field">
+            <span>Max balance (ETH)</span>
+            <input
+              type="number"
+              min={0}
+              step={0.001}
+              value={walletFilters.max_wallet_balance_eth}
+              onChange={(e) => setWalletFilter('max_wallet_balance_eth', e.target.value)}
+              placeholder="any"
+            />
+          </label>
+          <label className="field">
+            <span>Min hold time (min)</span>
+            <input
+              type="number"
+              min={0}
+              value={walletFilters.min_hold_time_minutes}
+              onChange={(e) => setWalletFilter('min_hold_time_minutes', e.target.value)}
+              placeholder="any"
+            />
+          </label>
+          <label className="field">
+            <span>Max hold time (min)</span>
+            <input
+              type="number"
+              min={0}
+              value={walletFilters.max_hold_time_minutes}
+              onChange={(e) => setWalletFilter('max_hold_time_minutes', e.target.value)}
+              placeholder="any"
+            />
+          </label>
+          <label className="field">
+            <span>Min tokens traded (7d)</span>
+            <input
+              type="number"
+              min={0}
+              value={walletFilters.min_tokens_traded_7d}
+              onChange={(e) => setWalletFilter('min_tokens_traded_7d', e.target.value)}
+              placeholder="any"
+            />
+          </label>
+          <label className="field">
+            <span>Max tokens traded (7d)</span>
+            <input
+              type="number"
+              min={0}
+              value={walletFilters.max_tokens_traded_7d}
+              onChange={(e) => setWalletFilter('max_tokens_traded_7d', e.target.value)}
+              placeholder="any"
+            />
+          </label>
+        </div>
         {error && <p className="err">{error}</p>}
         {job && (job.status === 'queued' || job.status === 'running') && (
           <div className="progress-wrap">
@@ -274,6 +530,32 @@ function EarlyBuyersPage({
             <div className="bar">
               <div className="bar-fill" style={{ width: `${Math.min(progress, 100)}%` }} />
             </div>
+          </div>
+        )}
+        {job && jobLog.length > 0 && (
+          <div className="job-log" aria-live="polite">
+            <div className="job-log-head">
+              <span>Parse log</span>
+              <span className="muted">{jobLog.length} steps</span>
+            </div>
+            <ol className="job-log-list">
+              {jobLog.map((entry, i) => (
+                <li
+                  key={`${entry.ts}-${i}`}
+                  className="job-log-row"
+                  ref={i === jobLog.length - 1 ? logEndRef : undefined}
+                >
+                  <time dateTime={new Date(entry.ts * 1000).toISOString()}>
+                    {formatLogTime(entry.ts)}
+                  </time>
+                  <span className={`job-log-stage stage-${entry.stage}`}>{entry.stage}</span>
+                  <span className="job-log-msg" title={entry.message}>
+                    {entry.message}
+                  </span>
+                  <span className="job-log-pct">{fmtNum(entry.percent, 0)}%</span>
+                </li>
+              ))}
+            </ol>
           </div>
         )}
         {job?.status === 'error' && <p className="err">{job.error || 'Job failed'}</p>}
@@ -400,6 +682,27 @@ function EarlyBuyersPage({
                   >
                     Buys
                   </th>
+                  <th
+                    className={sortKey === 'wallet_balance_eth' ? 'active' : undefined}
+                    data-dir={sortKey === 'wallet_balance_eth' ? sortDir : undefined}
+                    onClick={() => toggleSort('wallet_balance_eth')}
+                  >
+                    Balance
+                  </th>
+                  <th
+                    className={sortKey === 'hold_time_minutes' ? 'active' : undefined}
+                    data-dir={sortKey === 'hold_time_minutes' ? sortDir : undefined}
+                    onClick={() => toggleSort('hold_time_minutes')}
+                  >
+                    Hold
+                  </th>
+                  <th
+                    className={sortKey === 'tokens_traded_7d' ? 'active' : undefined}
+                    data-dir={sortKey === 'tokens_traded_7d' ? sortDir : undefined}
+                    onClick={() => toggleSort('tokens_traded_7d')}
+                  >
+                    Tokens 7d
+                  </th>
                   <th>Tx</th>
                 </tr>
               </thead>
@@ -440,6 +743,13 @@ function EarlyBuyersPage({
                     <td>${fmtNum(r.bought_usd, 2)}</td>
                     <td>${fmtNum(r.mcap_at_first_buy, 0)}</td>
                     <td>{r.buys_count}</td>
+                    <td>
+                      {r.wallet_balance_eth != null
+                        ? `${fmtNum(r.wallet_balance_eth, 4)} ETH`
+                        : '—'}
+                    </td>
+                    <td>{fmtHold(r.hold_time_minutes)}</td>
+                    <td>{r.tokens_traded_7d ?? '—'}</td>
                     <td className="mono">
                       {r.first_tx ? (
                         <a
@@ -470,8 +780,17 @@ function EarlyBuyersPage({
 }
 
 export default function App() {
-  const [page, setPage] = useState<AppPage>('buyers')
-  const [buyerInput, setBuyerInput] = useState('')
+  const appRestored = useMemo(() => loadJson<AppSession>(APP_SESSION_KEY), [])
+  const [page, setPage] = useState<AppPage>(appRestored?.page ?? 'buyers')
+  const [buyerInput, setBuyerInput] = useState(appRestored?.buyerInput ?? '')
+
+  useEffect(() => {
+    saveJson(APP_SESSION_KEY, {
+      v: 1,
+      page,
+      buyerInput,
+    } satisfies AppSession)
+  }, [page, buyerInput])
 
   const useInBuyers = useCallback((addresses: string[]) => {
     setBuyerInput(addresses.join('\n'))

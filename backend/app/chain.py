@@ -28,6 +28,57 @@ logger = logging.getLogger(__name__)
 # Shared HTTP client for DexScreener / Blockscout / CoinGecko
 _http: httpx.AsyncClient | None = None
 
+# One process-wide semaphore per RPC URL so JobStore + TokenIndex + honeypot
+# sim don't each open their own pool and stampede the public endpoint into 429s.
+_rpc_sems: dict[str, asyncio.Semaphore] = {}
+
+
+def _shared_sem(rpc_url: str, concurrency: int) -> asyncio.Semaphore:
+    # Created lazily; first caller wins on the limit (intentionally sticky).
+    sem = _rpc_sems.get(rpc_url)
+    if sem is None:
+        sem = asyncio.Semaphore(max(1, concurrency))
+        _rpc_sems[rpc_url] = sem
+    return sem
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    if any(
+        x in msg
+        for x in (
+            "429",
+            "rate",
+            "timeout",
+            "too many",
+            "503",
+            "502",
+            "connection",
+            "server error",
+            "temporarily",
+        )
+    ):
+        return True
+    # httpx raises HTTPStatusError with .response
+    resp = getattr(exc, "response", None)
+    if resp is not None and getattr(resp, "status_code", None) in (429, 502, 503):
+        return True
+    return False
+
+
+def _retry_delay(exc: BaseException, attempt: int, base: float = 0.5) -> float:
+    """Exponential backoff; honour Retry-After on 429 when present."""
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        ra = resp.headers.get("Retry-After") if hasattr(resp, "headers") else None
+        if ra:
+            try:
+                return min(float(ra), 30.0)
+            except ValueError:
+                pass
+    # Cap grows with attempt: 0.5 → 1 → 2 → 4 → 8 → 12
+    return min(base * (2**attempt), 12.0)
+
 
 class CallRevert(Exception):
     """eth_call reverted; `.data` holds hex revert payload when available."""
@@ -61,13 +112,13 @@ class RpcClient:
                 request_kwargs={"timeout": 45},
             )
         )
-        self._sem = asyncio.Semaphore(concurrency or settings.rpc_concurrency)
+        # Share the gate across all RpcClient instances for this URL.
+        self._sem = _shared_sem(self.rpc_url, concurrency or settings.rpc_concurrency)
         self._chunk = settings.log_chunk_size
         self._code_cache: dict[str, bool] = {}
         self._rpc_id = 0
 
-    async def _call(self, coro_factory, retries: int = 4):
-        delay = 0.25
+    async def _call(self, coro_factory, retries: int = 8):
         last_exc: Exception | None = None
         for attempt in range(retries):
             async with self._sem:
@@ -75,26 +126,14 @@ class RpcClient:
                     return await coro_factory()
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
-                    msg = str(exc).lower()
-                    retryable = any(
-                        x in msg
-                        for x in (
-                            "429",
-                            "rate",
-                            "timeout",
-                            "too many",
-                            "limit",
-                            "503",
-                            "502",
-                            "connection",
-                            "server error",
-                        )
-                    )
-                    if not retryable or attempt == retries - 1:
+                    if not _is_retryable(exc) or attempt == retries - 1:
                         raise
-                    logger.warning("RPC retry %s/%s: %s", attempt + 1, retries, exc)
+                    delay = _retry_delay(exc, attempt)
+                    logger.warning(
+                        "RPC retry %s/%s in %.1fs: %s",
+                        attempt + 1, retries, delay, exc,
+                    )
             await asyncio.sleep(delay)
-            delay = min(delay * 2, 4.0)
         assert last_exc
         raise last_exc
 
@@ -115,18 +154,22 @@ class RpcClient:
                 r.raise_for_status()
                 return r.json()
 
-        delay = 0.25
         data = None
-        for attempt in range(4):
+        last_exc: Exception | None = None
+        for attempt in range(8):
             try:
                 data = await do_post()
                 break
             except Exception as exc:  # noqa: BLE001
-                if attempt == 3:
+                last_exc = exc
+                if not _is_retryable(exc) or attempt == 7:
                     raise
-                logger.warning("batch RPC retry: %s", exc)
+                delay = _retry_delay(exc, attempt)
+                logger.warning("batch RPC retry in %.1fs: %s", delay, exc)
                 await asyncio.sleep(delay)
-                delay *= 2
+        if data is None:
+            assert last_exc
+            raise last_exc
 
         if isinstance(data, dict):
             data = [data]
@@ -232,9 +275,9 @@ class RpcClient:
         to_block: int,
         chunk_size: int | None = None,
         on_progress=None,
-        parallel: int = 6,
+        parallel: int = 2,
     ) -> list[Any]:
-        """Fetch logs in parallel chunk windows."""
+        """Fetch logs in parallel chunk windows (kept small to avoid RPC 429s)."""
         chunk = chunk_size or self._chunk
         ranges: list[tuple[int, int]] = []
         start = from_block
@@ -248,7 +291,7 @@ class RpcClient:
         logs: list[Any] = []
         total = len(ranges)
         done = 0
-        sem = asyncio.Semaphore(parallel)
+        sem = asyncio.Semaphore(max(1, parallel))
 
         async def one(a: int, b: int) -> list[Any]:
             nonlocal chunk

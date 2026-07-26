@@ -42,8 +42,8 @@ _ENRICH_BATCH = 30
 # Politeness: the index shares the RPC endpoint + DexScreener with the wallet
 # parser, so it runs on its own small connection pool and low concurrency and
 # never re-enriches the whole set in one burst.
-_ENRICH_CONCURRENCY = 4
-_INDEX_RPC_CONCURRENCY = 6
+_ENRICH_CONCURRENCY = 3
+_INDEX_RPC_CONCURRENCY = 2
 _REFRESH_INTERVAL_S = 120
 _ENRICH_TTL_S = 15 * 60  # metrics considered fresh for 15 min
 # Max stale tokens re-enriched per incremental cycle (new tokens are always
@@ -361,15 +361,17 @@ class TokenIndex:
             cold = full or not self.cold_started
             if not self.cold_started:
                 self.building = True
+            parse_busy = self._parse_active()
+            if parse_busy and not cold:
+                # Yield the entire RPC budget to the wallet parser — skip both
+                # the getLogs scan and stale enrichment while a parse is running.
+                logger.info("parse job active — skipping index scan/enrich this cycle")
+                return
             await self.scan_new_pools(full=cold, on_progress=on_progress)
             self._prune()
             if cold:
                 # One-time full enrichment — complete coverage.
                 stale_limit: int | None = None
-            elif self._parse_active():
-                # Yield RPC/HTTP budget to the wallet parser: only pick up
-                # brand-new tokens this cycle, defer stale refresh.
-                stale_limit = _BUSY_SLICE
             else:
                 stale_limit = _REFRESH_SLICE
             await self.enrich_pending(stale_limit=stale_limit, on_progress=on_progress)

@@ -31,9 +31,10 @@ from .constants import (
     WETH,
     ZERO,
 )
-from .models import BuyerRow, PoolInfo, TokenParseResult
+from .models import BuyerRow, ParseRequest, PoolInfo, TokenParseResult
 from .pools import estimate_start_block, pick_best_pool
 from .security import honeypot_reason_for_token
+from .wallet_metrics import enrich_and_filter_buyers
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +187,7 @@ async def parse_token(
     on_progress: ProgressCb | None = None,
     *,
     exclude_honeypots: bool = True,
+    wallet_filters: ParseRequest | None = None,
 ) -> TokenParseResult:
     async def prog(stage: str, message: str, percent: float) -> None:
         if on_progress:
@@ -344,6 +346,22 @@ async def parse_token(
 
     for b in buyers:
         b.token_symbol = result.symbol
+
+    buyers_found = len(buyers)
+    await prog("replay", f"Early buyers under mcap: {buyers_found}", 0.85)
+    if wallet_filters is not None and buyers:
+        buyers = await enrich_and_filter_buyers(
+            rpc,
+            token=token,
+            buyers=buyers,
+            req=wallet_filters,
+            start_block=start_block,
+            end_block=latest,
+            on_progress=prog,
+        )
+    elif not buyers:
+        await prog("replay", "No early buyers found under mcap threshold", 0.9)
+
     result.buyers = buyers
     result.stats = {
         "pool": pool.address,
@@ -353,9 +371,17 @@ async def parse_token(
         "start_block": start_block,
         "end_block": latest,
         "buyers": len(buyers),
+        "buyers_before_wallet_filters": buyers_found,
         "eth_usd": eth_usd,
     }
-    await prog("done", f"Found {len(buyers)} early buyers", 1.0)
+    if buyers_found != len(buyers):
+        await prog(
+            "done",
+            f"Done for token: {buyers_found} early → {len(buyers)} after filters",
+            1.0,
+        )
+    else:
+        await prog("done", f"Done for token: {len(buyers)} early buyers", 1.0)
     return result
 
 

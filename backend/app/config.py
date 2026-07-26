@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     mcap_threshold: float = 15_000.0
     # Larger chunks = fewer round-trips (filtered getLogs stay small)
     log_chunk_size: int = 100_000
-    rpc_concurrency: int = 24
+    # Public Robinhood RPC rate-limits aggressively; keep this low.
+    rpc_concurrency: int = 6
     # Funded EOА used as eth_call `from` for honeypot buy→sell simulation
     honeypot_sim_whale: str = ""
     host: str = "0.0.0.0"

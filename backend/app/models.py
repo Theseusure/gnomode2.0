@@ -19,6 +19,13 @@ class ParseRequest(BaseModel):
     tokens: list[str] = Field(..., min_length=1)
     mcap_threshold: float | None = None
     exclude_honeypots: bool = True
+    # Wallet filters (all optional min/max ranges, applied to found buyers)
+    min_wallet_balance_eth: float | None = None
+    max_wallet_balance_eth: float | None = None
+    min_hold_time_minutes: float | None = None
+    max_hold_time_minutes: float | None = None
+    min_tokens_traded_7d: float | None = None
+    max_tokens_traded_7d: float | None = None
 
 
 class BuyerRow(BaseModel):
@@ -31,6 +38,9 @@ class BuyerRow(BaseModel):
     buys_count: int
     first_tx: str = ""
     first_block: int = 0
+    wallet_balance_eth: float | None = None
+    hold_time_minutes: float | None = None
+    tokens_traded_7d: int | None = None
 
 
 class PoolInfo(BaseModel):
@@ -66,10 +76,21 @@ class JobProgress(BaseModel):
     current_token: str | None = None
 
 
+class JobLogEntry(BaseModel):
+    """One step in the parse/filter pipeline (shown in the UI log)."""
+
+    ts: float
+    stage: str
+    message: str
+    percent: float = 0.0
+    token: str | None = None
+
+
 class JobResponse(BaseModel):
     job_id: str
     status: JobStatus
     progress: JobProgress
+    log: list[JobLogEntry] = Field(default_factory=list)
     results: list[TokenParseResult] = Field(default_factory=list)
     error: str | None = None
 
