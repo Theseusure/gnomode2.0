@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_APP_DIR = Path(__file__).resolve().parent
+_DEFAULT_DATA = _APP_DIR / "data"
+# Project root (…/gnomode 2.0) and backend/ — independent of process cwd.
+_ROOT_ENV = _APP_DIR.parents[1] / ".env"
+_BACKEND_ENV = _APP_DIR.parent / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(".env", "../.env"),
+        env_file=(str(_ROOT_ENV), str(_BACKEND_ENV), ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -23,6 +31,15 @@ class Settings(BaseSettings):
     honeypot_sim_whale: str = ""
     host: str = "0.0.0.0"
     port: int = 8000
+
+    # Telegram alerts for the watch pipeline
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    # Forum topic / thread id (message_thread_id). Empty = General / no topic.
+    telegram_topic_id: str = ""
+    watch_config_path: str = str(_DEFAULT_DATA / "watch.json")
+    watch_seen_path: str = str(_DEFAULT_DATA / "watch_seen.json")
+    watch_state_path: str = str(_DEFAULT_DATA / "watch_state.json")
 
 
 settings = Settings()

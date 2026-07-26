@@ -106,11 +106,11 @@ function fmtAge(hours: number | null) {
 }
 
 function fmtAgo(tsSeconds: number) {
-  if (!tsSeconds) return 'never'
+  if (!tsSeconds) return 'никогда'
   const secs = Math.max(0, Date.now() / 1000 - tsSeconds)
-  if (secs < 60) return `${Math.round(secs)}s ago`
-  if (secs < 3600) return `${Math.round(secs / 60)}m ago`
-  return `${Math.round(secs / 3600)}h ago`
+  if (secs < 60) return `${Math.round(secs)}с назад`
+  if (secs < 3600) return `${Math.round(secs / 60)}м назад`
+  return `${Math.round(secs / 3600)}ч назад`
 }
 
 function parseOpt(raw: string): number | null {
@@ -267,11 +267,11 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
                   ...prev,
                   status: 'error',
                   error:
-                    'Job lost after server restart. Showing last saved snapshot.',
+                    'Задача потеряна после перезапуска сервера. Показан последний сохранённый снимок.',
                   progress: {
                     ...prev.progress,
                     stage: 'error',
-                    message: 'Job lost — restored from session',
+                    message: 'Задача потеряна — восстановлено из сессии',
                   },
                 }
               : prev,
@@ -410,10 +410,10 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
     <>
       <header className="hero">
         <p className="brand">gnomode</p>
-        <h1>Token screener</h1>
+        <h1>Скринер токенов</h1>
         <p className="lede">
-          All new Robinhood Chain tokens from the last 24h (Uniswap V3/V4), with liquidity,
-          age, traders, and market-cap filters.
+          Новые токены Robinhood Chain за последние 24ч (Uniswap V3/V4) с фильтрами по
+          ликвидности, возрасту, трейдерам и капитализации.
         </p>
       </header>
 
@@ -421,19 +421,21 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
         <div className="index-status-meta">
           {indexStatus ? (
             indexStatus.building && !indexStatus.cold_started ? (
-              <span className="idx-build">Building 24h index… {fmtNum(indexStatus.enriched, 0)} tokens ready</span>
+              <span className="idx-build">
+                Строим индекс 24ч… готово {fmtNum(indexStatus.enriched, 0)} токенов
+              </span>
             ) : (
               <span>
-                <strong>{fmtNum(indexStatus.tokens_24h, 0)}</strong> new tokens (24h)
+                <strong>{fmtNum(indexStatus.tokens_24h, 0)}</strong> новых токенов (24ч)
                 <span className="muted">
-                  {' '}· {fmtNum(indexStatus.enriched, 0)} enriched · updated{' '}
+                  {' '}· {fmtNum(indexStatus.enriched, 0)} обогащено · обновлено{' '}
                   {fmtAgo(indexStatus.last_refresh_ts)}
-                  {indexStatus.refreshing ? ' · refreshing…' : ''}
+                  {indexStatus.refreshing ? ' · обновляем…' : ''}
                 </span>
               </span>
             )
           ) : (
-            <span className="muted">Loading index status…</span>
+            <span className="muted">Загрузка статуса индекса…</span>
           )}
         </div>
         <button
@@ -442,7 +444,7 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
           onClick={refreshIndex}
           disabled={!!indexStatus?.refreshing}
         >
-          {indexStatus?.refreshing ? 'Refreshing…' : 'Refresh index'}
+          {indexStatus?.refreshing ? 'Обновление…' : 'Обновить индекс'}
         </button>
       </section>
 
@@ -455,109 +457,109 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
         />
         <div className="filter-grid">
           <label className="field">
-            <span>Min liquidity ($)</span>
+            <span>Мин. ликвидность ($)</span>
             <input
               type="number"
               min={0}
               value={filters.min_liq}
               onChange={(e) => setFilter('min_liq', e.target.value)}
-              placeholder="any"
+              placeholder="любая"
             />
           </label>
           <label className="field">
-            <span>Max liquidity ($)</span>
+            <span>Макс. ликвидность ($)</span>
             <input
               type="number"
               min={0}
               value={filters.max_liq}
               onChange={(e) => setFilter('max_liq', e.target.value)}
-              placeholder="any"
+              placeholder="любая"
             />
           </label>
           <label className="field">
-            <span>Min mcap ($)</span>
+            <span>Мин. mcap ($)</span>
             <input
               type="number"
               min={0}
               value={filters.min_mcap}
               onChange={(e) => setFilter('min_mcap', e.target.value)}
-              placeholder="any"
+              placeholder="любая"
             />
           </label>
           <label className="field">
-            <span>Max mcap ($)</span>
+            <span>Макс. mcap ($)</span>
             <input
               type="number"
               min={0}
               value={filters.max_mcap}
               onChange={(e) => setFilter('max_mcap', e.target.value)}
-              placeholder="any"
+              placeholder="любая"
             />
           </label>
           <label className="field">
-            <span>Min traders (24h txns)</span>
+            <span>Мин. трейдеров (24ч)</span>
             <input
               type="number"
               min={0}
               value={filters.min_traders}
               onChange={(e) => setFilter('min_traders', e.target.value)}
-              placeholder="any"
+              placeholder="любое"
             />
           </label>
           <label className="field">
-            <span>Max traders (24h txns)</span>
+            <span>Макс. трейдеров (24ч)</span>
             <input
               type="number"
               min={0}
               value={filters.max_traders}
               onChange={(e) => setFilter('max_traders', e.target.value)}
-              placeholder="any"
+              placeholder="любое"
             />
           </label>
           <label className="field">
-            <span>Min pair age (hours)</span>
+            <span>Мин. возраст пары (ч)</span>
             <input
               type="number"
               min={0}
               value={filters.min_pair_age_hours}
               onChange={(e) => setFilter('min_pair_age_hours', e.target.value)}
-              placeholder="any"
+              placeholder="любой"
             />
           </label>
           <label className="field">
-            <span>Max pair age (hours)</span>
+            <span>Макс. возраст пары (ч)</span>
             <input
               type="number"
               min={0}
               value={filters.max_pair_age_hours}
               onChange={(e) => setFilter('max_pair_age_hours', e.target.value)}
-              placeholder="any"
+              placeholder="любой"
             />
           </label>
           <label className="field">
-            <span>Sort by</span>
+            <span>Сортировка</span>
             <select
               value={filters.sort_by}
               onChange={(e) => setFilter('sort_by', e.target.value as ScreenSortBy)}
             >
-              <option value="liquidity">Liquidity</option>
-              <option value="market_cap">Market cap</option>
-              <option value="traders">Traders</option>
-              <option value="pair_age">Pair age</option>
+              <option value="liquidity">Ликвидность</option>
+              <option value="market_cap">Капитализация</option>
+              <option value="traders">Трейдеры</option>
+              <option value="pair_age">Возраст пары</option>
             </select>
           </label>
           <label className="field">
-            <span>Order</span>
+            <span>Порядок</span>
             <select
               value={filters.sort_order}
               onChange={(e) => setFilter('sort_order', e.target.value as ScreenSortOrder)}
             >
-              <option value="desc">Descending</option>
-              <option value="asc">Ascending</option>
+              <option value="desc">По убыванию</option>
+              <option value="asc">По возрастанию</option>
             </select>
           </label>
           <label className="field">
-            <span>Max results</span>
+            <span>Макс. результатов</span>
             <input
               type="number"
               min={1}
@@ -567,14 +569,14 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
             />
           </label>
           <label className="field check-field">
-            <span>Security</span>
+            <span>Безопасность</span>
             <label className="check-inline">
               <input
                 type="checkbox"
                 checked={filters.exclude_honeypots}
                 onChange={(e) => setFilter('exclude_honeypots', e.target.checked)}
               />
-              Skip honeypots (GMGN)
+              Пропускать honeypot (GMGN)
             </label>
           </label>
         </div>
@@ -585,7 +587,7 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
             disabled={busy}
             onClick={startScreen}
           >
-            {busy ? 'Screening…' : 'Screen tokens'}
+            {busy ? 'Скрининг…' : 'Скринить токены'}
           </button>
           <button
             type="button"
@@ -593,7 +595,7 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
             disabled={busy}
             onClick={() => setFilters(DEFAULT_FILTERS)}
           >
-            Reset filters
+            Сбросить фильтры
           </button>
         </div>
 
@@ -609,7 +611,7 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
             </div>
           </div>
         )}
-        {job?.status === 'error' && <p className="err">{job.error || 'Job failed'}</p>}
+        {job?.status === 'error' && <p className="err">{job.error || 'Ошибка задачи'}</p>}
       </section>
 
       {rows.length > 0 && (
@@ -644,15 +646,15 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
           <div className="table-toolbar">
             <input
               className="search"
-              placeholder="Filter by symbol / address…"
+              placeholder="Фильтр по символу / адресу…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               spellCheck={false}
             />
             <div className="toolbar-right">
-              <span className="muted">{filtered.length} tokens</span>
+              <span className="muted">{filtered.length} токенов</span>
               <button type="button" className="ghost" onClick={() => exportCsv(filtered)}>
-                Export CSV
+                Экспорт CSV
               </button>
             </div>
           </div>
@@ -665,7 +667,7 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
                       type="checkbox"
                       checked={allVisibleSelected}
                       onChange={toggleAllVisible}
-                      aria-label="Select all"
+                      aria-label="Выбрать все"
                     />
                   </th>
                   <th
@@ -673,21 +675,21 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
                     data-dir={sortKey === 'symbol' ? sortDir : undefined}
                     onClick={() => toggleSort('symbol')}
                   >
-                    Token
+                    Токен
                   </th>
                   <th
                     className={sortKey === 'price_usd' ? 'active' : undefined}
                     data-dir={sortKey === 'price_usd' ? sortDir : undefined}
                     onClick={() => toggleSort('price_usd')}
                   >
-                    Price
+                    Цена
                   </th>
                   <th
                     className={sortKey === 'liquidity_usd' ? 'active' : undefined}
                     data-dir={sortKey === 'liquidity_usd' ? sortDir : undefined}
                     onClick={() => toggleSort('liquidity_usd')}
                   >
-                    Liquidity
+                    Ликвидность
                   </th>
                   <th
                     className={sortKey === 'market_cap' ? 'active' : undefined}
@@ -701,17 +703,17 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
                     data-dir={sortKey === 'traders_24h' ? sortDir : undefined}
                     onClick={() => toggleSort('traders_24h')}
                   >
-                    Traders
+                    Трейдеры
                   </th>
-                  <th>B/S</th>
+                  <th>Б/П</th>
                   <th
                     className={sortKey === 'pair_age_hours' ? 'active' : undefined}
                     data-dir={sortKey === 'pair_age_hours' ? sortDir : undefined}
                     onClick={() => toggleSort('pair_age_hours')}
                   >
-                    Age
+                    Возраст
                   </th>
-                  <th>Links</th>
+                  <th>Ссылки</th>
                 </tr>
               </thead>
               <tbody>
@@ -732,7 +734,7 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
                           type="checkbox"
                           checked={isSelected}
                           onChange={() => toggleSelect(r.address)}
-                          aria-label={`Select ${r.symbol || r.address}`}
+                          aria-label={`Выбрать ${r.symbol || r.address}`}
                         />
                       </td>
                       <td>
@@ -777,7 +779,7 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
       )}
 
       {job?.status === 'done' && rows.length === 0 && (
-        <p className="empty">No tokens matched these filters.</p>
+        <p className="empty">Нет токенов, подходящих под эти фильтры.</p>
       )}
     </>
   )

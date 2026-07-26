@@ -158,3 +158,68 @@ class IndexStatus(BaseModel):
     last_scan_ts: float = 0.0
     last_refresh_ts: float = 0.0
     window_hours: int = 24
+
+
+class WatchScreenFilters(BaseModel):
+    min_liq: float | None = None
+    max_liq: float | None = None
+    min_mcap: float | None = None
+    max_mcap: float | None = None
+    min_traders: float | None = None
+    max_traders: float | None = None
+    min_pair_age_hours: float | None = None
+    max_pair_age_hours: float | None = None
+    exclude_honeypots: bool = True
+    sort_by: ScreenSortBy = ScreenSortBy.liquidity
+    sort_order: ScreenSortOrder = ScreenSortOrder.desc
+    max_results: int = Field(default=500, ge=1, le=2000)
+
+
+class WatchWalletFilters(BaseModel):
+    mcap_threshold: float | None = None
+    exclude_honeypots: bool = True
+    min_wallet_balance_eth: float | None = None
+    max_wallet_balance_eth: float | None = None
+    min_hold_time_minutes: float | None = None
+    max_hold_time_minutes: float | None = None
+    min_tokens_traded_7d: float | None = None
+    max_tokens_traded_7d: float | None = None
+
+
+class WatchConfig(BaseModel):
+    enabled: bool = False
+    interval_sec: int = Field(default=900, ge=60, le=86400)
+    max_tokens_per_cycle: int = Field(default=20, ge=1, le=2000)
+    telegram_chat_id: str = ""
+    # Forum topic id (Telegram message_thread_id). Empty → no topic / General.
+    telegram_topic_id: str = ""
+    # Periodic tired-gnome status lines in Telegram (every ~10–15 min).
+    gnome_banter_enabled: bool = True
+    screen: WatchScreenFilters = Field(default_factory=WatchScreenFilters)
+    wallet: WatchWalletFilters = Field(default_factory=WatchWalletFilters)
+
+
+class WatchStatus(BaseModel):
+    enabled: bool = False
+    running: bool = False
+    telegram_configured: bool = False
+    next_run_ts: float | None = None
+    last_run_ts: float | None = None
+    last_run_duration_sec: float | None = None
+    last_error: str | None = None
+    last_message: str = ""
+    last_tokens_screened: int = 0
+    last_tokens_parsed: int = 0
+    last_buyers_found: int = 0
+    last_buyers_new: int = 0
+    last_buyers_sent: int = 0
+    last_buyers_skipped: int = 0
+    seen_count: int = 0
+    # Catch-up after downtime (before regular interval cycles)
+    needs_catchup: bool = False
+    catchup_lookback_hours: float | None = None
+    is_catchup_run: bool = False
+    gnome_banter_enabled: bool = True
+    gnome_banter_next_ts: float | None = None
+    stop_requested: bool = False
+    log: list[JobLogEntry] = Field(default_factory=list)

@@ -13,9 +13,20 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .jobs import jobs
-from .models import IndexStatus, JobResponse, ParseRequest, ScreenJobResponse, ScreenRequest
+from .models import (
+    IndexStatus,
+    JobResponse,
+    ParseRequest,
+    ScreenJobResponse,
+    ScreenRequest,
+    WatchConfig,
+    WatchStatus,
+)
 from .screen_jobs import screen_jobs
 from .token_index import token_index
+from .gnome_banter import gnome_banter
+from .watch import watch_runner
+from .watch_store import watch_store
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,9 +45,21 @@ app.add_middleware(
 
 
 @app.on_event("startup")
-async def _start_token_index() -> None:
+async def _start_background() -> None:
+    from .gnome_lifecycle import install_death_hooks
+
+    install_death_hooks()
     # Background: cold-build the 24h token index, then keep it fresh.
     asyncio.create_task(token_index.run_refresh_loop())
+    asyncio.create_task(watch_runner.run_loop())
+    asyncio.create_task(gnome_banter.run_loop())
+
+
+@app.on_event("shutdown")
+async def _shutdown_announce() -> None:
+    from .gnome_lifecycle import announce_death
+
+    announce_death("остановка сервера (shutdown)")
 
 
 @app.get("/api/index/status", response_model=IndexStatus)
@@ -103,6 +126,62 @@ async def get_screen(job_id: str):
     if not job:
         raise HTTPException(404, "Job not found")
     return job
+
+
+@app.get("/api/watch", response_model=WatchConfig)
+async def get_watch():
+    return watch_store.load_config()
+
+
+@app.put("/api/watch", response_model=WatchConfig)
+async def put_watch(cfg: WatchConfig):
+    saved = watch_store.save_config(cfg)
+    watch_runner.notify_config_changed()
+    return saved
+
+
+@app.get("/api/watch/status", response_model=WatchStatus)
+async def get_watch_status():
+    st = watch_runner.status()
+    bits = gnome_banter.status_bits()
+    return st.model_copy(update=bits)
+
+
+@app.post("/api/watch/run", response_model=WatchStatus)
+async def watch_run_now():
+    return await watch_runner.run_now()
+
+
+@app.post("/api/watch/stop", response_model=WatchStatus)
+async def watch_stop():
+    return await watch_runner.stop()
+
+
+@app.post("/api/watch/reset-counters", response_model=WatchStatus)
+async def watch_reset_counters():
+    return watch_runner.reset_counters()
+
+
+@app.post("/api/watch/test-telegram")
+async def watch_test_telegram():
+    from .telegram import test_telegram_connection
+
+    cfg = watch_store.load_config()
+    try:
+        result = await test_telegram_connection(
+            chat_id=cfg.telegram_chat_id,
+            topic_id=cfg.telegram_topic_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+    watch_runner._append_log("telegram", result.get("message") or "Telegram OK")
+    return result
+
+
+@app.post("/api/watch/clear-seen")
+async def watch_clear_seen():
+    watch_store.clear_seen()
+    return {"ok": True, "seen_count": 0}
 
 
 # Serve built frontend if present

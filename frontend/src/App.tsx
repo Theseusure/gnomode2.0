@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import ScreenerPage from './ScreenerPage'
+import WatchPage from './WatchPage'
 import { FilterPresets } from './FilterPresets'
 import { loadJson, saveJson } from './session'
 import { useVisitedGmgnWallets } from './useVisitedGmgnWallets'
@@ -82,7 +83,7 @@ type SortKey =
   | 'wallet_balance_eth'
   | 'hold_time_minutes'
   | 'tokens_traded_7d'
-type AppPage = 'buyers' | 'screener'
+type AppPage = 'buyers' | 'screener' | 'watch'
 
 type WalletFilters = {
   min_wallet_balance_eth: string
@@ -319,11 +320,11 @@ function EarlyBuyersPage({
                   ...prev,
                   status: 'error',
                   error:
-                    'Job lost after server restart. Showing last saved snapshot.',
+                    'Задача потеряна после перезапуска сервера. Показан последний сохранённый снимок.',
                   progress: {
                     ...prev.progress,
                     stage: 'error',
-                    message: 'Job lost — restored from session',
+                    message: 'Задача потеряна — восстановлено из сессии',
                   },
                 }
               : prev,
@@ -353,7 +354,7 @@ function EarlyBuyersPage({
       .map((t) => t.trim())
       .filter(Boolean)
     if (!tokens.length) {
-      setError('Paste at least one token address')
+      setError('Вставьте хотя бы один адрес токена')
       return
     }
     setBusy(true)
@@ -403,26 +404,26 @@ function EarlyBuyersPage({
     <>
       <header className="hero">
         <p className="brand">gnomode</p>
-        <h1>Early buyers on Robinhood Chain</h1>
+        <h1>Ранние покупатели на Robinhood Chain</h1>
         <p className="lede">
-          Find wallets that bought a token while market cap was still under your threshold.
+          Находит кошельки, которые купили токен, пока рыночная капитализация была ниже вашего порога.
         </p>
       </header>
 
       <section className="panel input-panel">
         <label className="field">
-          <span>Token address(es)</span>
+          <span>Адрес(а) токена</span>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="0x… one per line, or comma-separated"
+            placeholder="0x… по одному в строке или через запятую"
             rows={4}
             spellCheck={false}
           />
         </label>
         <div className="row">
           <label className="field compact">
-            <span>Mcap threshold (USD)</span>
+            <span>Порог mcap (USD)</span>
             <input
               type="number"
               min={0}
@@ -432,14 +433,14 @@ function EarlyBuyersPage({
             />
           </label>
           <label className="field check-field">
-            <span>Security</span>
+            <span>Безопасность</span>
             <label className="check-inline">
               <input
                 type="checkbox"
                 checked={excludeHoneypots}
                 onChange={(e) => setExcludeHoneypots(e.target.checked)}
               />
-                Skip honeypots (GMGN)
+                Пропускать honeypot (GMGN)
             </label>
           </label>
           <button
@@ -447,7 +448,7 @@ function EarlyBuyersPage({
             disabled={busy}
             onClick={startParse}
           >
-            {busy ? 'Parsing…' : 'Parse'}
+            {busy ? 'Парсинг…' : 'Парсить'}
           </button>
         </div>
         <FilterPresets
@@ -458,65 +459,65 @@ function EarlyBuyersPage({
         />
         <div className="filter-grid">
           <label className="field">
-            <span>Min balance (ETH)</span>
+            <span>Мин. баланс (ETH)</span>
             <input
               type="number"
               min={0}
               step={0.001}
               value={walletFilters.min_wallet_balance_eth}
               onChange={(e) => setWalletFilter('min_wallet_balance_eth', e.target.value)}
-              placeholder="any"
+              placeholder="любой"
             />
           </label>
           <label className="field">
-            <span>Max balance (ETH)</span>
+            <span>Макс. баланс (ETH)</span>
             <input
               type="number"
               min={0}
               step={0.001}
               value={walletFilters.max_wallet_balance_eth}
               onChange={(e) => setWalletFilter('max_wallet_balance_eth', e.target.value)}
-              placeholder="any"
+              placeholder="любой"
             />
           </label>
           <label className="field">
-            <span>Min hold time (min)</span>
+            <span>Мин. холд (мин)</span>
             <input
               type="number"
               min={0}
               value={walletFilters.min_hold_time_minutes}
               onChange={(e) => setWalletFilter('min_hold_time_minutes', e.target.value)}
-              placeholder="any"
+              placeholder="любой"
             />
           </label>
           <label className="field">
-            <span>Max hold time (min)</span>
+            <span>Макс. холд (мин)</span>
             <input
               type="number"
               min={0}
               value={walletFilters.max_hold_time_minutes}
               onChange={(e) => setWalletFilter('max_hold_time_minutes', e.target.value)}
-              placeholder="any"
+              placeholder="любой"
             />
           </label>
           <label className="field">
-            <span>Min tokens traded (7d)</span>
+            <span>Мин. токенов за 7д</span>
             <input
               type="number"
               min={0}
               value={walletFilters.min_tokens_traded_7d}
               onChange={(e) => setWalletFilter('min_tokens_traded_7d', e.target.value)}
-              placeholder="any"
+              placeholder="любой"
             />
           </label>
           <label className="field">
-            <span>Max tokens traded (7d)</span>
+            <span>Макс. токенов за 7д</span>
             <input
               type="number"
               min={0}
               value={walletFilters.max_tokens_traded_7d}
               onChange={(e) => setWalletFilter('max_tokens_traded_7d', e.target.value)}
-              placeholder="any"
+              placeholder="любой"
             />
           </label>
         </div>
@@ -535,8 +536,8 @@ function EarlyBuyersPage({
         {job && jobLog.length > 0 && (
           <div className="job-log" aria-live="polite">
             <div className="job-log-head">
-              <span>Parse log</span>
-              <span className="muted">{jobLog.length} steps</span>
+              <span>Лог парсинга</span>
+              <span className="muted">{jobLog.length} шагов</span>
             </div>
             <ol className="job-log-list">
               {jobLog.map((entry, i) => (
@@ -558,7 +559,7 @@ function EarlyBuyersPage({
             </ol>
           </div>
         )}
-        {job?.status === 'error' && <p className="err">{job.error || 'Job failed'}</p>}
+        {job?.status === 'error' && <p className="err">{job.error || 'Ошибка задачи'}</p>}
       </section>
 
       {job?.results?.some((r) => r.error || r.pool) && (
@@ -575,7 +576,7 @@ function EarlyBuyersPage({
                   <strong>{r.symbol || shortAddr(r.token)}</strong>
                 </a>
                 {!r.error && (
-                  <span className="badge">{r.buyers.length} wallets</span>
+                  <span className="badge">{r.buyers.length} кошельков</span>
                 )}
                 {r.error?.toLowerCase().includes('honeypot') && (
                   <span className="badge badge-warn">honeypot</span>
@@ -604,7 +605,7 @@ function EarlyBuyersPage({
                         target="_blank"
                         rel="noreferrer"
                       >
-                        pool
+                        пул
                       </a>
                     </>
                   )}
@@ -620,25 +621,25 @@ function EarlyBuyersPage({
           <div className="table-toolbar">
             <input
               className="search"
-              placeholder="Filter by wallet / token…"
+              placeholder="Фильтр по кошельку / токену…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               spellCheck={false}
             />
             <div className="toolbar-right">
-              <span className="muted">{filtered.length} wallets</span>
+              <span className="muted">{filtered.length} кошельков</span>
               {visitedCount > 0 && (
                 <>
-                  <span className="muted visited-count" title="Opened on GMGN this browser">
-                    {visitedCount} viewed
+                  <span className="muted visited-count" title="Открыто на GMGN в этом браузере">
+                    {visitedCount} просмотрено
                   </span>
                   <button type="button" className="ghost" onClick={clearVisited}>
-                    Clear viewed
+                    Сбросить просмотры
                   </button>
                 </>
               )}
               <button type="button" className="ghost" onClick={() => exportCsv(filtered)}>
-                Export CSV
+                Экспорт CSV
               </button>
             </div>
           </div>
@@ -651,15 +652,15 @@ function EarlyBuyersPage({
                     data-dir={sortKey === 'wallet' ? sortDir : undefined}
                     onClick={() => toggleSort('wallet')}
                   >
-                    Wallet
+                    Кошелёк
                   </th>
-                  <th>Token</th>
+                  <th>Токен</th>
                   <th
                     className={sortKey === 'bought_tokens' ? 'active' : undefined}
                     data-dir={sortKey === 'bought_tokens' ? sortDir : undefined}
                     onClick={() => toggleSort('bought_tokens')}
                   >
-                    Bought
+                    Куплено
                   </th>
                   <th
                     className={sortKey === 'bought_usd' ? 'active' : undefined}
@@ -673,35 +674,35 @@ function EarlyBuyersPage({
                     data-dir={sortKey === 'mcap_at_first_buy' ? sortDir : undefined}
                     onClick={() => toggleSort('mcap_at_first_buy')}
                   >
-                    Mcap at buy
+                    Mcap при покупке
                   </th>
                   <th
                     className={sortKey === 'buys_count' ? 'active' : undefined}
                     data-dir={sortKey === 'buys_count' ? sortDir : undefined}
                     onClick={() => toggleSort('buys_count')}
                   >
-                    Buys
+                    Покупок
                   </th>
                   <th
                     className={sortKey === 'wallet_balance_eth' ? 'active' : undefined}
                     data-dir={sortKey === 'wallet_balance_eth' ? sortDir : undefined}
                     onClick={() => toggleSort('wallet_balance_eth')}
                   >
-                    Balance
+                    Баланс
                   </th>
                   <th
                     className={sortKey === 'hold_time_minutes' ? 'active' : undefined}
                     data-dir={sortKey === 'hold_time_minutes' ? sortDir : undefined}
                     onClick={() => toggleSort('hold_time_minutes')}
                   >
-                    Hold
+                    Холд
                   </th>
                   <th
                     className={sortKey === 'tokens_traded_7d' ? 'active' : undefined}
                     data-dir={sortKey === 'tokens_traded_7d' ? sortDir : undefined}
                     onClick={() => toggleSort('tokens_traded_7d')}
                   >
-                    Tokens 7d
+                    Токены 7д
                   </th>
                   <th>Tx</th>
                 </tr>
@@ -719,7 +720,7 @@ function EarlyBuyersPage({
                         href={gmgnWallet(r.wallet)}
                         target="_blank"
                         rel="noreferrer"
-                        title={viewed ? `${r.wallet} (viewed on GMGN)` : r.wallet}
+                        title={viewed ? `${r.wallet} (просмотрено на GMGN)` : r.wallet}
                         className={viewed ? 'wallet-link visited' : 'wallet-link'}
                         onClick={() => markVisited(r.wallet)}
                         onAuxClick={(e) => {
@@ -773,7 +774,9 @@ function EarlyBuyersPage({
       )}
 
       {job?.status === 'done' && allBuyers.length === 0 && !job.results.some((r) => r.error) && (
-        <p className="empty">No early buyers found under ${fmtNum(threshold, 0)} mcap.</p>
+        <p className="empty">
+          Ранних покупателей ниже mcap ${fmtNum(threshold, 0)} не найдено.
+        </p>
       )}
     </>
   )
@@ -800,33 +803,43 @@ export default function App() {
 
   return (
     <div className="page">
-      <nav className="page-nav" aria-label="Main">
+      <nav className="page-nav" aria-label="Главное меню">
         <button
           type="button"
           className={page === 'buyers' ? 'nav-link active' : 'nav-link'}
           onClick={() => setPage('buyers')}
         >
-          Early buyers
+          Кошельки
         </button>
         <button
           type="button"
           className={page === 'screener' ? 'nav-link active' : 'nav-link'}
           onClick={() => setPage('screener')}
         >
-          Screener
+          Скринер
+        </button>
+        <button
+          type="button"
+          className={page === 'watch' ? 'nav-link active' : 'nav-link'}
+          onClick={() => setPage('watch')}
+        >
+          Автопарс
         </button>
       </nav>
 
-      {/* Keep both pages mounted so results survive tab switches */}
+      {/* Keep pages mounted so results survive tab switches */}
       <div hidden={page !== 'buyers'}>
         <EarlyBuyersPage input={buyerInput} setInput={setBuyerInput} />
       </div>
       <div hidden={page !== 'screener'}>
         <ScreenerPage onUseInBuyers={useInBuyers} />
       </div>
+      <div hidden={page !== 'watch'}>
+        <WatchPage />
+      </div>
 
       <footer className="foot">
-        Robinhood Chain · Uniswap V2/V3/V4 · public RPC by default
+        Robinhood Chain · Uniswap V2/V3/V4 · публичный RPC по умолчанию
       </footer>
     </div>
   )

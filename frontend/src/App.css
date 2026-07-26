@@ -308,6 +308,21 @@ textarea {
   transform: translateY(-1px);
 }
 
+.ghost.danger {
+  border-color: color-mix(in srgb, var(--danger, #c44) 55%, var(--line));
+  color: var(--danger, #c44);
+}
+
+.ghost.danger:hover {
+  border-color: var(--danger, #c44);
+  color: var(--danger, #c44);
+}
+
+.ghost.danger:disabled {
+  opacity: 0.45;
+  transform: none;
+}
+
 /* ——— Progress ——— */
 
 .progress-wrap {
@@ -813,6 +828,52 @@ a.wallet-link.visited:hover {
     opacity: 1;
     transform: translateX(0);
   }
+}
+
+/* ——— Watch ——— */
+
+.section-title {
+  margin: 0 0 0.85rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.watch-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.9rem 1rem;
+}
+
+.watch-status-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.watch-status-grid .muted {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.watch-status-grid .tiny {
+  font-size: 0.75rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.watch-msg {
+  margin: 0.9rem 0 0;
+  font-size: 0.9rem;
+}
+
+.watch-error {
+  margin: 0.75rem 0 0;
+  color: #b42318;
+  font-size: 0.9rem;
 }
 
 @media (max-width: 640px) {

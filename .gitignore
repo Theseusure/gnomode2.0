@@ -9,6 +9,11 @@ __pycache__/
 # Env
 .env
 
+# Watch runtime state
+backend/app/data/watch.json
+backend/app/data/watch_seen.json
+backend/app/data/watch_state.json
+
 # Node
 frontend/node_modules/
 frontend/dist/
