@@ -10,6 +10,7 @@ type FollowupConfig = {
   alert_on_deals: number[]
   max_deals: number
   buys_only: boolean
+  track_transfers: boolean
   telegram_chat_id: string
   telegram_topic_id: string
   bot_commands_enabled: boolean
@@ -51,6 +52,7 @@ type FollowupDeal = {
   token_symbol: string
   deal_index: number
   mcap_at_buy: number | null
+  bought_usd: number | null
   notified: boolean
 }
 
@@ -58,6 +60,8 @@ type FollowupWallet = {
   address: string
   status: string
   deal_count: number
+  wallet_balance_eth: number | null
+  tokens_traded_7d: number | null
   raybot_synced: boolean
   first_mcap: number | null
   deals: FollowupDeal[]
@@ -73,6 +77,7 @@ const DEFAULT_CFG: FollowupConfig = {
   alert_on_deals: [2, 3],
   max_deals: 3,
   buys_only: true,
+  track_transfers: false,
   telegram_chat_id: '',
   telegram_topic_id: '',
   bot_commands_enabled: true,
@@ -256,6 +261,19 @@ export default function FollowupPage() {
               buys_only
             </label>
           </label>
+          <label className="field check-field">
+            <span className="muted">Transfers (EOA)</span>
+            <label className="check-inline">
+              <input
+                type="checkbox"
+                checked={cfg.track_transfers}
+                onChange={(e) =>
+                  setCfg({ ...cfg, track_transfers: e.target.checked })
+                }
+              />
+              track_transfers
+            </label>
+          </label>
           <label className="field compact">
             <span className="muted">Интервал, сек</span>
             <input
@@ -351,7 +369,8 @@ export default function FollowupPage() {
         </div>
         <p className="muted tiny">
           Алерт только на deal #2/#3 при mcap ≤ max (и ≥ min, если задан). Высокий
-          mcap — запись без уведомления. В Telegram: /help
+          mcap — запись без уведомления. buys_only=on — только входящие с контракта
+          (DEX). track_transfers учитывается при buys_only=off. В Telegram: /help
         </p>
         <div className="row">
           <button
@@ -415,6 +434,8 @@ export default function FollowupPage() {
                 <th>Адрес</th>
                 <th>Статус</th>
                 <th>Сделок</th>
+                <th>Баланс ETH</th>
+                <th>Токенов 7д</th>
                 <th>1-й mcap</th>
                 <th>История</th>
               </tr>
@@ -435,13 +456,16 @@ export default function FollowupPage() {
                   </td>
                   <td>{w.status}</td>
                   <td>{w.deal_count}</td>
+                  <td>{fmtNum(w.wallet_balance_eth)}</td>
+                  <td>{w.tokens_traded_7d ?? '—'}</td>
                   <td>{fmtNum(w.first_mcap)}</td>
                   <td className="muted tiny">
                     {w.deals
-                      .map(
-                        (d) =>
-                          `#${d.deal_index} ${d.token_symbol || d.token.slice(0, 6)} @${fmtNum(d.mcap_at_buy)}${d.notified ? ' ✓' : ''}`,
-                      )
+                      .map((d) => {
+                        const buy =
+                          d.bought_usd != null ? ` $${fmtNum(d.bought_usd)}` : ''
+                        return `#${d.deal_index} ${d.token_symbol || d.token.slice(0, 6)} @${fmtNum(d.mcap_at_buy)}${buy}${d.notified ? ' ✓' : ''}`
+                      })
                       .join(' · ') || '—'}
                   </td>
                 </tr>

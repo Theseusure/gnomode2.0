@@ -98,11 +98,13 @@ def alert_kwargs_from_config(cfg: FollowupConfig) -> dict:
     }
 
 
-async def estimate_token_mcap(token: str) -> float | None:
+async def estimate_token_quote(token: str) -> tuple[float | None, float | None]:
+    """Return (market_cap_usd, price_usd) from the highest-liquidity DexScreener pair."""
     pairs = await fetch_dexscreener_pairs(token)
     if not pairs:
-        return None
-    best: float | None = None
+        return None, None
+    best_mcap: float | None = None
+    best_price: float | None = None
     best_liq = -1.0
     for p in pairs:
         try:
@@ -116,12 +118,88 @@ async def estimate_token_mcap(token: str) -> float | None:
             mcap = float(raw) if raw is not None else None
         except (TypeError, ValueError):
             mcap = None
-        if mcap is None:
+        try:
+            price = float(p.get("priceUsd")) if p.get("priceUsd") is not None else None
+        except (TypeError, ValueError):
+            price = None
+        if mcap is None and price is None:
             continue
         if liq >= best_liq:
             best_liq = liq
-            best = mcap
-    return best
+            best_mcap = mcap
+            best_price = price
+    return best_mcap, best_price
+
+
+async def estimate_token_mcap(token: str) -> float | None:
+    mcap, _ = await estimate_token_quote(token)
+    return mcap
+
+
+def _transfer_token_amount(item: dict[str, Any]) -> float | None:
+    """Parse human token amount from a Blockscout token-transfer item."""
+    total = item.get("total")
+    raw: str | None = None
+    decimals: int | None = None
+    if isinstance(total, dict):
+        raw = total.get("value")
+        if raw is None:
+            raw = total.get("token_id")
+        try:
+            decimals = int(total.get("decimals")) if total.get("decimals") is not None else None
+        except (TypeError, ValueError):
+            decimals = None
+    elif total is not None:
+        raw = str(total)
+    if decimals is None:
+        tok = item.get("token") or {}
+        if isinstance(tok, dict) and tok.get("decimals") is not None:
+            try:
+                decimals = int(tok["decimals"])
+            except (TypeError, ValueError):
+                decimals = None
+    if raw is None:
+        return None
+    try:
+        value = float(str(raw).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    if decimals is None:
+        decimals = 18
+    if decimals < 0:
+        return None
+    return value / (10**decimals)
+
+
+def estimate_bought_usd(item: dict[str, Any], price_usd: float | None) -> float | None:
+    if price_usd is None or price_usd <= 0:
+        return None
+    amount = _transfer_token_amount(item)
+    if amount is None or amount <= 0:
+        return None
+    return amount * float(price_usd)
+
+
+def _is_buy_like_transfer(
+    item: dict[str, Any],
+    wallet: str,
+    *,
+    buys_only: bool,
+    track_transfers: bool,
+) -> bool:
+    """RayBot-style EVM gate: inbound to tracked wallet; optionally DEX-only."""
+    to_h = _addr_hash(item.get("to"))
+    if to_h != wallet.lower():
+        return False
+    frm = item.get("from")
+    from_contract = _is_contract(frm)
+    if buys_only:
+        # DEX/router/pool sends tokens to wallet
+        return from_contract
+    if from_contract:
+        return True
+    # EOA → wallet transfer
+    return bool(track_transfers)
 
 
 class FollowupRunner:
@@ -416,37 +494,37 @@ class FollowupRunner:
 
     async def _scan_wallet(self, wallet: str, cfg: FollowupConfig) -> list:
         known = self._store.known_tokens(wallet)
-        # Collect first inbound (buy-like) transfer per unknown token, oldest first among page.
-        candidates: dict[str, tuple[str, str, str]] = {}  # token -> (sym, tx, direction_note)
+        # Collect first matching inbound transfer per unknown token.
+        # API is newest-first: keep overwriting so last seen (older) wins in scanned pages.
+        candidates: dict[str, tuple[str, str, dict[str, Any]]] = {}
         async for item in iter_address_token_transfers(wallet, max_pages=6):
             token, sym = _token_meta(item)
             if not token or token in QUOTE_TOKENS or token in known:
                 continue
-            to_h = _addr_hash(item.get("to"))
-            frm = item.get("from")
-            # Buy-like: tokens received from a contract (DEX/router/pool)
-            if to_h != wallet.lower():
-                continue
-            if not _is_contract(frm):
+            if not _is_buy_like_transfer(
+                item,
+                wallet,
+                buys_only=cfg.buys_only,
+                track_transfers=cfg.track_transfers,
+            ):
                 continue
             tx = str(item.get("transaction_hash") or item.get("tx_hash") or "")
-            # Prefer earliest appearance in history: since API is newest-first,
-            # keep overwriting so the last seen (older) wins within scanned pages.
-            candidates[token] = (sym, tx, "in")
+            candidates[token] = (sym, tx, item)
 
-        # Process in stable order; mcap check per token
         out = []
-        for token, (sym, tx, _) in candidates.items():
+        for token, (sym, tx, item) in candidates.items():
             if self._stop_requested:
                 break
             if token in self._store.known_tokens(wallet):
                 continue
-            mcap = await estimate_token_mcap(token)
+            mcap, price = await estimate_token_quote(token)
+            bought_usd = estimate_bought_usd(item, price)
             deal = self._store.record_deal(
                 wallet=wallet,
                 token=token,
                 token_symbol=sym,
                 mcap_at_buy=mcap,
+                bought_usd=bought_usd,
                 tx_hash=tx,
                 max_deals=cfg.max_deals,
             )

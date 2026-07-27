@@ -9,6 +9,10 @@ Commands (same TELEGRAM_BOT_TOKEN as watch alerts):
   /run — запустить цикл сейчас
   /set_max_mcap <n> — порог max mcap алерта
   /set_min_mcap <n|off> — нижняя граница mcap
+  /set_min_bought <n|off> — min buy USD
+  /set_max_bought <n|off> — max buy USD
+  /set_buys_only <on|off> — только DEX buys
+  /set_transfers <on|off> — учитывать EOA transfers (если buys_only=off)
   /set_interval <sec> — интервал цикла
 """
 
@@ -33,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 _HELP = (
     "<b>gnomode Follow-up bot</b>\n"
-    "Нативный трекер без RayBot.\n\n"
+    "Нативный трекер без RayBot (EVM-фильтры).\n\n"
     "/status — статус цикла\n"
     "/wallets — кошельки watching\n"
     "/filters — фильтры алертов\n"
@@ -41,9 +45,29 @@ _HELP = (
     "/run — цикл сейчас\n"
     "/set_max_mcap 15000 — max mcap для алерта\n"
     "/set_min_mcap 0|off — min mcap\n"
+    "/set_min_bought 50|off — min сумма покупки $\n"
+    "/set_max_bought 5000|off — max сумма покупки $\n"
+    "/set_buys_only on|off — только buys с DEX\n"
+    "/set_transfers on|off — EOA transfers (при buys_only=off)\n"
     "/set_interval 300 — интервал сек\n"
     "/help — эта справка"
 )
+
+
+def _parse_optional_float(raw: str) -> float | None:
+    t = raw.strip().lower()
+    if t in ("off", "none", "-", ""):
+        return None
+    return float(t.replace(",", "").replace("_", ""))
+
+
+def _parse_on_off(raw: str) -> bool | None:
+    t = raw.strip().lower()
+    if t in ("on", "1", "true", "yes", "да"):
+        return True
+    if t in ("off", "0", "false", "no", "нет"):
+        return False
+    return None
 
 
 class FollowupBot:
@@ -193,20 +217,58 @@ class FollowupBot:
         if cmd == "/set_min_mcap":
             if not args:
                 return "Использование: /set_min_mcap 1000 | /set_min_mcap off"
-            raw = args[0].lower()
-            if raw in ("off", "none", "-", "0"):
-                val: float | None = None if raw != "0" else 0.0
-                if raw == "0":
-                    val = 0.0
-                else:
-                    val = None
-            else:
-                val = float(raw.replace(",", "").replace("_", ""))
+            val = _parse_optional_float(args[0])
+            if args[0].strip() == "0":
+                val = 0.0
             cfg = followup_store.load_config()
             cfg = cfg.model_copy(update={"min_mcap_alert": val})
             followup_store.save_config(cfg)
             followup_runner.notify_config_changed()
             return f"min_mcap_alert = <b>{val if val is not None else 'off'}</b>"
+
+        if cmd == "/set_min_bought":
+            if not args:
+                return "Использование: /set_min_bought 50 | /set_min_bought off"
+            val = _parse_optional_float(args[0])
+            cfg = followup_store.load_config()
+            cfg = cfg.model_copy(update={"min_bought_usd": val})
+            followup_store.save_config(cfg)
+            followup_runner.notify_config_changed()
+            return f"min_bought_usd = <b>{val if val is not None else 'off'}</b>"
+
+        if cmd == "/set_max_bought":
+            if not args:
+                return "Использование: /set_max_bought 5000 | /set_max_bought off"
+            val = _parse_optional_float(args[0])
+            cfg = followup_store.load_config()
+            cfg = cfg.model_copy(update={"max_bought_usd": val})
+            followup_store.save_config(cfg)
+            followup_runner.notify_config_changed()
+            return f"max_bought_usd = <b>{val if val is not None else 'off'}</b>"
+
+        if cmd == "/set_buys_only":
+            if not args:
+                return "Использование: /set_buys_only on|off"
+            flag = _parse_on_off(args[0])
+            if flag is None:
+                return "Использование: /set_buys_only on|off"
+            cfg = followup_store.load_config()
+            cfg = cfg.model_copy(update={"buys_only": flag})
+            followup_store.save_config(cfg)
+            followup_runner.notify_config_changed()
+            return f"buys_only = <b>{'on' if flag else 'off'}</b>"
+
+        if cmd == "/set_transfers":
+            if not args:
+                return "Использование: /set_transfers on|off"
+            flag = _parse_on_off(args[0])
+            if flag is None:
+                return "Использование: /set_transfers on|off"
+            cfg = followup_store.load_config()
+            cfg = cfg.model_copy(update={"track_transfers": flag})
+            followup_store.save_config(cfg)
+            followup_runner.notify_config_changed()
+            return f"track_transfers = <b>{'on' if flag else 'off'}</b>"
 
         if cmd == "/set_interval":
             if not args:
@@ -238,10 +300,12 @@ def _format_filters(cfg: FollowupConfig) -> str:
         f"<b>Фильтры Follow-up</b>\n"
         f"max_mcap ≤ {cfg.max_mcap_alert:,.0f}\n"
         f"min_mcap ≥ {cfg.min_mcap_alert if cfg.min_mcap_alert is not None else 'off'}\n"
-        f"bought_usd: {cfg.min_bought_usd or '—'} … {cfg.max_bought_usd or '—'}\n"
+        f"bought_usd: {cfg.min_bought_usd if cfg.min_bought_usd is not None else '—'} … "
+        f"{cfg.max_bought_usd if cfg.max_bought_usd is not None else '—'}\n"
         f"alert_on_deals: [{deals}]\n"
         f"max_deals: {cfg.max_deals}\n"
         f"buys_only: {cfg.buys_only}\n"
+        f"track_transfers: {cfg.track_transfers}\n"
         f"ingest_from_watch: {cfg.ingest_from_watch}\n"
         f"bot_commands: {cfg.bot_commands_enabled}\n"
         f"interval: {cfg.interval_sec}s"

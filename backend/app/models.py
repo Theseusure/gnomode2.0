@@ -249,8 +249,11 @@ class FollowupConfig(BaseModel):
     # Deal indices that trigger Telegram (1 = discovery only in watch; 2/3 = follow-up).
     alert_on_deals: list[int] = Field(default_factory=lambda: [2, 3])
     max_deals: int = Field(default=3, ge=1, le=20)
-    # One distinct token = one deal (always). Buys-only scan ignores sells/transfers-out.
+    # One distinct token = one deal (always). Buys-only: only inbound from contract (DEX).
     buys_only: bool = True
+    # When False (default), ignore wallet↔wallet token transfers (RayBot-style EVM).
+    # When True and buys_only is False, also record inbound transfers from EOAs.
+    track_transfers: bool = False
     telegram_chat_id: str = ""
     telegram_topic_id: str = ""
     # Native Telegram bot commands (/status, /filters, …) via long-poll.

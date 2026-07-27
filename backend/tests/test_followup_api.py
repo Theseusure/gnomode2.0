@@ -138,3 +138,15 @@ async def test_bot_commands_set_max_mcap(tmp_path, monkeypatch):
     assert store.load_config().enabled is True
     reply = await bot._handle("/off", [])
     assert store.load_config().enabled is False
+
+    reply = await bot._handle("/set_min_bought", ["50"])
+    assert store.load_config().min_bought_usd == 50.0
+    reply = await bot._handle("/set_max_bought", ["off"])
+    assert store.load_config().max_bought_usd is None
+    reply = await bot._handle("/set_buys_only", ["off"])
+    assert store.load_config().buys_only is False
+    reply = await bot._handle("/set_transfers", ["on"])
+    assert store.load_config().track_transfers is True
+    reply = await bot._handle("/filters", [])
+    assert "track_transfers" in reply
+    assert "bought_usd" in reply
