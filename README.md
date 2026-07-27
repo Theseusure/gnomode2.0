@@ -4,6 +4,9 @@
 
 Интерфейс на русском. Один процесс = API + UI (Docker или локально).
 
+**Полная инструкция для команды (настройка + использование):**  
+[docs/USER_GUIDE.md](docs/USER_GUIDE.md) · на GitHub: [открыть](https://github.com/Theseusure/gnomode2.0/blob/feature/followup-ray-filters/docs/USER_GUIDE.md)
+
 ---
 
 ## Какую ссылку дать коллегам
