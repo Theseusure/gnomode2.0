@@ -138,7 +138,7 @@ def format_buyer_block(buyer: BuyerRow) -> str:
         (
             f"Bal {_fmt_num(buyer.wallet_balance_eth)} ETH · "
             f"hold {_fmt_hold(buyer.hold_time_minutes)} · "
-            f"7d tokens {buyer.tokens_traded_7d if buyer.tokens_traded_7d is not None else '—'}"
+            f"30d tokens {buyer.tokens_traded_7d if buyer.tokens_traded_7d is not None else '—'}"
         ),
         f'<a href="https://gmgn.ai/robinhood/token/{token}">GMGN token</a> · '
         f'<a href="https://gmgn.ai/robinhood/address/{wallet}">GMGN wallet</a>',
