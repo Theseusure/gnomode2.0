@@ -6,14 +6,17 @@ import asyncio
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .jobs import jobs
 from .models import (
+    FollowupConfig,
+    FollowupStatus,
+    FollowupWalletRow,
     IndexStatus,
     JobResponse,
     ParseRequest,
@@ -25,6 +28,8 @@ from .models import (
 from .screen_jobs import screen_jobs
 from .token_index import token_index
 from .gnome_banter import gnome_banter
+from .followup import followup_runner
+from .followup_store import followup_store
 from .watch import watch_runner
 from .watch_store import watch_store
 
@@ -33,7 +38,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 
-app = FastAPI(title="Gnomode — Robinhood Early Buyers", version="1.0.0")
+app = FastAPI(title="Gnomode — Robinhood Early Buyers", version="2.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,6 +57,10 @@ async def _start_background() -> None:
     # Background: cold-build the 24h token index, then keep it fresh.
     asyncio.create_task(token_index.run_refresh_loop())
     asyncio.create_task(watch_runner.run_loop())
+    asyncio.create_task(followup_runner.run_loop())
+    from .followup_bot import followup_bot
+
+    asyncio.create_task(followup_bot.run_loop())
     asyncio.create_task(gnome_banter.run_loop())
 
 
@@ -182,6 +191,174 @@ async def watch_test_telegram():
 async def watch_clear_seen():
     watch_store.clear_seen()
     return {"ok": True, "seen_count": 0}
+
+
+@app.get("/api/followup", response_model=FollowupConfig)
+async def get_followup():
+    return followup_store.load_config()
+
+
+@app.put("/api/followup", response_model=FollowupConfig)
+async def put_followup(cfg: FollowupConfig):
+    saved = followup_store.save_config(cfg)
+    followup_runner.notify_config_changed()
+    return saved
+
+
+@app.get("/api/followup/status", response_model=FollowupStatus)
+async def get_followup_status():
+    return followup_runner.status()
+
+
+@app.get("/api/followup/wallets", response_model=list[FollowupWalletRow])
+async def get_followup_wallets(
+    status: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+):
+    return followup_store.list_wallets(
+        status=status, limit=limit, offset=offset, include_deals=True
+    )
+
+
+@app.post("/api/followup/run", response_model=FollowupStatus)
+async def followup_run_now():
+    return await followup_runner.run_now()
+
+
+@app.post("/api/followup/stop", response_model=FollowupStatus)
+async def followup_stop():
+    return await followup_runner.stop()
+
+
+@app.post("/api/followup/reset-counters", response_model=FollowupStatus)
+async def followup_reset_counters():
+    return followup_runner.reset_counters()
+
+
+@app.post("/api/followup/test-telegram")
+async def followup_test_telegram():
+    from .telegram import test_telegram_connection
+
+    cfg = followup_store.load_config()
+    try:
+        result = await test_telegram_connection(
+            chat_id=cfg.telegram_chat_id,
+            topic_id=cfg.telegram_topic_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+    followup_runner._append_log("telegram", result.get("message") or "Telegram OK")
+    return result
+
+
+@app.post("/api/followup/test-raybot")
+async def followup_test_raybot():
+    from .raybot import RayBotClient
+
+    client = RayBotClient()
+    try:
+        return await client.test_connection()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/followup/webhook/raybot")
+async def followup_raybot_webhook(request: Request):
+    """Optional RayBot webhook: acknowledge quickly; process deals in background."""
+    expected = (settings.raybot_webhook_auth or "").strip()
+    if expected:
+        auth = request.headers.get("Authorization") or ""
+        if auth != expected:
+            raise HTTPException(401, "Unauthorized")
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        payload = {}
+    event_type = str(
+        payload.get("event_type")
+        or request.headers.get("X-RayBot-Event")
+        or ""
+    ).lower()
+    if event_type == "test":
+        return {"ok": True}
+    asyncio.create_task(_handle_raybot_event(payload, event_type))
+    return JSONResponse({"ok": True})
+
+
+async def _handle_raybot_event(payload: dict, event_type: str) -> None:
+    from .followup import alert_kwargs_from_config, estimate_token_mcap, should_alert_deal
+    from .telegram import (
+        resolve_chat_id,
+        resolve_topic_id,
+        send_followup_deal,
+        telegram_configured,
+    )
+
+    if event_type not in ("buy", "evm_buy", "swap"):
+        return
+    cfg = followup_store.load_config()
+    followed = payload.get("followed_wallets") or []
+    tokens = payload.get("tokens") or {}
+    event = payload.get("event") or {}
+    mint = str(event.get("mintOut") or event.get("mint") or "")
+    for change in payload.get("token_changes") or []:
+        if str(change.get("direction") or "").lower() == "in":
+            mint = str(change.get("mint") or mint)
+            break
+    symbol = ""
+    mcap = None
+    if mint and isinstance(tokens, dict):
+        meta = tokens.get(mint) or tokens.get(mint.lower()) or {}
+        symbol = str(meta.get("symbol") or "")
+        try:
+            price = float(meta.get("price_usd") or 0)
+            supply = float(meta.get("supply") or 0)
+            if price > 0 and supply > 0:
+                mcap = price * supply
+        except (TypeError, ValueError):
+            mcap = None
+    if mcap is None and mint:
+        mcap = await estimate_token_mcap(mint)
+    tx = str(payload.get("id") or "")
+    for w in followed:
+        addr = str((w or {}).get("address") or "").lower()
+        if not addr or not mint:
+            continue
+        deal = followup_store.record_deal(
+            wallet=addr,
+            token=mint,
+            token_symbol=symbol,
+            mcap_at_buy=mcap,
+            tx_hash=tx,
+            max_deals=cfg.max_deals,
+        )
+        if not deal:
+            continue
+        if not should_alert_deal(
+            deal.deal_index,
+            deal.mcap_at_buy,
+            bought_usd=deal.bought_usd,
+            **alert_kwargs_from_config(cfg),
+        ):
+            continue
+        chat = resolve_chat_id(cfg.telegram_chat_id)
+        if not telegram_configured(chat):
+            continue
+        if not followup_store.mark_notified(deal.wallet, deal.token):
+            continue
+        try:
+            await send_followup_deal(
+                chat,
+                wallet=deal.wallet,
+                token=deal.token,
+                token_symbol=deal.token_symbol,
+                deal_index=deal.deal_index,
+                mcap_at_buy=deal.mcap_at_buy,
+                topic_id=resolve_topic_id(cfg.telegram_topic_id),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).warning("webhook alert failed: %s", exc)
 
 
 # Serve built frontend if present

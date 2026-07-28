@@ -42,5 +42,15 @@ class Settings(BaseSettings):
     watch_state_path: str = str(_DEFAULT_DATA / "watch_state.json")
     watch_hold_path: str = str(_DEFAULT_DATA / "watch_hold.json")
 
+    # Follow-up watchlist (SQLite) + optional RayBot EVM sync
+    followup_db_path: str = str(_DEFAULT_DATA / "followup.db")
+    followup_config_path: str = str(_DEFAULT_DATA / "followup.json")
+    raybot_api_user: str = ""
+    raybot_api_token: str = ""
+    # Bot number from RayBot docs (1 = @ray_purple_bot). 0 = webhook destination.
+    raybot_bot: int = 1
+    raybot_base_url: str = "https://webapi.raybot.app"
+    raybot_webhook_auth: str = ""
+
 
 settings = Settings()

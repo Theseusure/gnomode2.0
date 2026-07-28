@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import ScreenerPage from './ScreenerPage'
 import WatchPage from './WatchPage'
+import FollowupPage from './FollowupPage'
+import SettingsPage from './SettingsPage'
 import { FilterPresets } from './FilterPresets'
 import { loadJson, saveJson } from './session'
 import { useVisitedGmgnWallets } from './useVisitedGmgnWallets'
@@ -83,7 +85,7 @@ type SortKey =
   | 'wallet_balance_eth'
   | 'hold_time_minutes'
   | 'tokens_traded_7d'
-type AppPage = 'buyers' | 'screener' | 'watch'
+type AppPage = 'buyers' | 'screener' | 'watch' | 'followup' | 'settings'
 
 type WalletFilters = {
   min_wallet_balance_eth: string
@@ -825,6 +827,20 @@ export default function App() {
         >
           Автопарс
         </button>
+        <button
+          type="button"
+          className={page === 'followup' ? 'nav-link active' : 'nav-link'}
+          onClick={() => setPage('followup')}
+        >
+          Follow-up
+        </button>
+        <button
+          type="button"
+          className={page === 'settings' ? 'nav-link active' : 'nav-link'}
+          onClick={() => setPage('settings')}
+        >
+          Настройки
+        </button>
       </nav>
 
       {/* Keep pages mounted so results survive tab switches */}
@@ -836,6 +852,12 @@ export default function App() {
       </div>
       <div hidden={page !== 'watch'}>
         <WatchPage />
+      </div>
+      <div hidden={page !== 'followup'}>
+        <FollowupPage />
+      </div>
+      <div hidden={page !== 'settings'}>
+        <SettingsPage />
       </div>
 
       <footer className="foot">

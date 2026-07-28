@@ -80,3 +80,39 @@ async def iter_token_transfers(token: str) -> AsyncIterator[dict[str, Any]]:
         if not next_params:
             return
         params = next_params
+
+
+async def iter_address_token_transfers(
+    wallet: str,
+    *,
+    max_pages: int = 8,
+) -> AsyncIterator[dict[str, Any]]:
+    """Paginate ERC-20 transfers for a wallet (newest first)."""
+    url = f"{_base_url()}/addresses/{wallet}/token-transfers"
+    params: dict[str, Any] = {}
+    client = http_client()
+    for _ in range(max(1, max_pages)):
+        try:
+            resp = await client.get(url, params=params, headers=_headers())
+            if resp.status_code == 404:
+                return
+            if resp.status_code != 200:
+                logger.warning(
+                    "Blockscout wallet transfers %s: %s",
+                    resp.status_code,
+                    resp.text[:200],
+                )
+                return
+            data = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Blockscout wallet transfers error: %s", exc)
+            return
+
+        items = data.get("items") or []
+        for item in items:
+            yield item
+
+        next_params = data.get("next_page_params")
+        if not next_params or not items:
+            return
+        params = next_params

@@ -14,6 +14,9 @@ backend/app/data/watch.json
 backend/app/data/watch_seen.json
 backend/app/data/watch_state.json
 backend/app/data/watch_hold.json
+backend/app/data/followup.db
+backend/app/data/followup.db-*
+backend/app/data/followup.json
 
 # Node
 frontend/node_modules/

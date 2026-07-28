@@ -232,3 +232,80 @@ class WatchStatus(BaseModel):
     gnome_banter_next_ts: float | None = None
     stop_requested: bool = False
     log: list[JobLogEntry] = Field(default_factory=list)
+
+
+class FollowupConfig(BaseModel):
+    """Watchlist of early buyers → alert on 2nd/3rd new-token buy @ low mcap."""
+
+    enabled: bool = False
+    interval_sec: int = Field(default=300, ge=60, le=86400)
+    # Alert only when buy mcap is at or below this (USD). High mcap → record, no alert.
+    max_mcap_alert: float = Field(default=15_000.0, ge=0)
+    # Optional lower bound (USD). None = no floor.
+    min_mcap_alert: float | None = None
+    # Optional size filters on bought_usd (when known).
+    min_bought_usd: float | None = None
+    max_bought_usd: float | None = None
+    # Deal indices that trigger Telegram (1 = discovery only in watch; 2/3 = follow-up).
+    alert_on_deals: list[int] = Field(default_factory=lambda: [2, 3])
+    max_deals: int = Field(default=3, ge=1, le=20)
+    # One distinct token = one deal (always). Buys-only: only inbound from contract (DEX).
+    buys_only: bool = True
+    # When False (default), ignore wallet↔wallet token transfers (RayBot-style EVM).
+    # When True and buys_only is False, also record inbound transfers from EOAs.
+    track_transfers: bool = False
+    telegram_chat_id: str = ""
+    telegram_topic_id: str = ""
+    # Native Telegram bot commands (/status, /filters, …) via long-poll.
+    bot_commands_enabled: bool = True
+    # Legacy optional RayBot sync (not required — native bot replaces it).
+    raybot_enabled: bool = False
+    # When True, ingest early buyers from autoparse into the follow-up table.
+    ingest_from_watch: bool = True
+
+
+class FollowupDealRow(BaseModel):
+    wallet: str
+    token: str
+    token_symbol: str = ""
+    deal_index: int
+    mcap_at_buy: float | None = None
+    bought_usd: float | None = None
+    tx_hash: str = ""
+    notified: bool = False
+    created_at: float = 0.0
+
+
+class FollowupWalletRow(BaseModel):
+    address: str
+    status: str = "watching"  # watching | done | paused
+    deal_count: int = 0
+    wallet_balance_eth: float | None = None
+    tokens_traded_7d: int | None = None
+    raybot_synced: bool = False
+    first_token: str = ""
+    first_mcap: float | None = None
+    discovered_at: float = 0.0
+    updated_at: float = 0.0
+    deals: list[FollowupDealRow] = Field(default_factory=list)
+
+
+class FollowupStatus(BaseModel):
+    enabled: bool = False
+    running: bool = False
+    telegram_configured: bool = False
+    bot_commands_enabled: bool = True
+    bot_polling: bool = False
+    raybot_configured: bool = False
+    next_run_ts: float | None = None
+    last_run_ts: float | None = None
+    last_run_duration_sec: float | None = None
+    last_error: str | None = None
+    last_message: str = ""
+    wallets_watching: int = 0
+    wallets_done: int = 0
+    last_checked: int = 0
+    last_new_deals: int = 0
+    last_alerts_sent: int = 0
+    stop_requested: bool = False
+    log: list[JobLogEntry] = Field(default_factory=list)

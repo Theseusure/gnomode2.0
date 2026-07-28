@@ -374,7 +374,7 @@ async def _tokens_traded_7d_one(
     enough: int | None = None,
     too_many: int | None = None,
 ) -> tuple[int, bool] | None:
-    """Distinct non-quote tokens traded in 7d.
+    """Distinct non-quote tokens traded in 30d.
 
     Returns ``(count, exact)``. May stop early when:
     - ``enough`` is met (min-only pass) → ``exact=False``
@@ -433,7 +433,7 @@ async def batch_tokens_traded_7d(
     enough: int | None = None,
     too_many: int | None = None,
 ) -> dict[str, int | None]:
-    """Distinct ERC-20 tokens traded in 7d; paced + bounded retries."""
+    """Distinct ERC-20 tokens traded in 30d; paced + bounded retries."""
     now = time.time()
     out: dict[str, int | None] = {}
     misses: list[str] = []
@@ -448,7 +448,7 @@ async def batch_tokens_traded_7d(
     if not misses:
         return out
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     done = 0
     total = len(misses)
     lock = asyncio.Lock()
