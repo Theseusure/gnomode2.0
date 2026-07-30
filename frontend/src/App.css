@@ -899,3 +899,40 @@ a.wallet-link.visited:hover {
     padding: 0 1rem;
   }
 }
+
+/* ——— Хвать ——— */
+
+.hvat-panel {
+  animation: rise 0.55s var(--ease-out) both;
+}
+
+.hvat-hero {
+  margin-bottom: 1.25rem;
+}
+
+.hvat-title {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: clamp(2rem, 5vw, 2.75rem);
+  letter-spacing: -0.04em;
+  margin: 0 0 0.4rem;
+  line-height: 1;
+}
+
+.hvat-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 0.75rem 1rem;
+  margin: 1.25rem 0;
+}
+
+.hvat-meta {
+  margin: 0 0 1.5rem;
+  line-height: 1.55;
+}
+
+.hvat-panel .section-title {
+  font-family: var(--display);
+  font-size: 1.15rem;
+  margin: 1.5rem 0 0.65rem;
+}

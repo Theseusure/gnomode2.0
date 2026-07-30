@@ -344,7 +344,7 @@ class FollowupRunner:
         *,
         cfg: FollowupConfig | None = None,
     ) -> int:
-        """Called from watch after successful Telegram send of early buyers."""
+        """Ingest early buyers from autoparse into follow-up (idempotent)."""
         cfg = cfg or self._store.load_config()
         if not cfg.ingest_from_watch:
             return 0

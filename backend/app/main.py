@@ -229,6 +229,39 @@ async def watch_clear_seen():
     return {"ok": True, "seen_count": 0}
 
 
+@app.get("/api/hvat/status")
+async def get_hvat_status():
+    from .hvat import hvat_status
+
+    return hvat_status()
+
+
+@app.post("/api/hvat/enable")
+async def hvat_enable():
+    """Enable Хвать profile: 1-trade wallets, first buy ≤20k, follow-up #2/#3."""
+    from .hvat import apply_hvat_profile
+
+    return apply_hvat_profile(enable=True)
+
+
+@app.post("/api/hvat/disable")
+async def hvat_disable():
+    from .hvat import apply_hvat_profile
+
+    return apply_hvat_profile(enable=False)
+
+
+@app.post("/api/hvat/run")
+async def hvat_run_now():
+    """Kick both watch and follow-up cycles."""
+    from .hvat import apply_hvat_profile
+
+    apply_hvat_profile(enable=True)
+    watch_st = await watch_runner.run_now()
+    follow_st = await followup_runner.run_now()
+    return {"ok": True, "watch": watch_st, "followup": follow_st}
+
+
 @app.get("/api/followup", response_model=FollowupConfig)
 async def get_followup():
     return followup_store.load_config()

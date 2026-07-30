@@ -70,7 +70,7 @@ type FollowupWallet = {
 const DEFAULT_CFG: FollowupConfig = {
   enabled: false,
   interval_sec: 300,
-  max_mcap_alert: 15000,
+  max_mcap_alert: 20000,
   min_mcap_alert: null,
   min_bought_usd: null,
   max_bought_usd: null,

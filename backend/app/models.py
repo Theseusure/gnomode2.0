@@ -205,14 +205,14 @@ class WatchScreenFilters(BaseModel):
 
 
 class WatchWalletFilters(BaseModel):
-    mcap_threshold: float | None = None
+    mcap_threshold: float | None = 20_000.0
     exclude_honeypots: bool = True
     min_wallet_balance_eth: float | None = None
     max_wallet_balance_eth: float | None = None
     min_hold_time_minutes: float | None = None
     max_hold_time_minutes: float | None = None
-    min_tokens_traded_7d: float | None = None
-    max_tokens_traded_7d: float | None = None
+    min_tokens_traded_7d: float | None = 1.0
+    max_tokens_traded_7d: float | None = 1.0
 
 
 class WatchConfig(BaseModel):
@@ -264,7 +264,7 @@ class FollowupConfig(BaseModel):
     enabled: bool = False
     interval_sec: int = Field(default=300, ge=60, le=86400)
     # Alert only when buy mcap is at or below this (USD). High mcap → record, no alert.
-    max_mcap_alert: float = Field(default=15_000.0, ge=0)
+    max_mcap_alert: float = Field(default=20_000.0, ge=0)
     # Optional lower bound (USD). None = no floor.
     min_mcap_alert: float | None = None
     # Optional size filters on bought_usd (when known).
