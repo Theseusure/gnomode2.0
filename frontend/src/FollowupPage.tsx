@@ -69,7 +69,7 @@ type FollowupWallet = {
 
 const DEFAULT_CFG: FollowupConfig = {
   enabled: false,
-  interval_sec: 300,
+  interval_sec: 5,
   max_mcap_alert: 20000,
   min_mcap_alert: null,
   min_bought_usd: null,
@@ -301,9 +301,9 @@ export default function FollowupPage({ tabActive = true }: { tabActive?: boolean
             <input
               type="number"
               value={cfg.interval_sec}
-              min={60}
+              min={5}
               onChange={(e) =>
-                setCfg({ ...cfg, interval_sec: Number(e.target.value) || 300 })
+                setCfg({ ...cfg, interval_sec: Number(e.target.value) || 5 })
               }
             />
           </label>

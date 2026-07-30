@@ -13,7 +13,7 @@ Commands (same TELEGRAM_BOT_TOKEN as watch alerts):
   /set_max_bought <n|off> — max buy USD
   /set_buys_only <on|off> — только DEX buys
   /set_transfers <on|off> — учитывать EOA transfers (если buys_only=off)
-  /set_interval <sec> — интервал цикла
+  /set_interval <sec> — интервал цикла (мин 5)
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ _HELP = (
     "/set_max_bought 5000|off — max сумма покупки $\n"
     "/set_buys_only on|off — только buys с DEX\n"
     "/set_transfers on|off — EOA transfers (при buys_only=off)\n"
-    "/set_interval 300 — интервал сек\n"
+    "/set_interval 5 — интервал сек (мин 5)\n"
     "/help — эта справка"
 )
 
@@ -298,7 +298,7 @@ class FollowupBot:
             if not args:
                 return "Использование: /set_interval 300"
             sec = int(args[0])
-            sec = max(60, min(sec, 86400))
+            sec = max(5, min(sec, 86400))
             cfg = followup_store.load_config()
             cfg = cfg.model_copy(update={"interval_sec": sec})
             followup_store.save_config(cfg)

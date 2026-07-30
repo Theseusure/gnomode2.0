@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from .blockscout import iter_address_token_transfers
+from .blockscout import scan_address_token_transfers
 from .config import settings
 from .constants import QUOTE_TOKENS
 from .followup_store import FollowupStore, followup_store
@@ -425,7 +425,11 @@ class FollowupRunner:
             cfg = self._store.load_config()
             if not cfg.enabled:
                 continue
-            self._next_run_ts = time.time() + cfg.interval_sec
+            # interval_sec = target period between cycle *starts*. If a cycle
+            # already took longer, start the next one immediately.
+            period = max(5, int(cfg.interval_sec or 5))
+            sleep_for = max(0.0, period - float(self._last_run_duration_sec or 0))
+            self._next_run_ts = time.time() + sleep_for
             self._wake.clear()
             while True:
                 remaining = self._next_run_ts - time.time()
@@ -433,7 +437,7 @@ class FollowupRunner:
                     break
                 try:
                     await asyncio.wait_for(
-                        self._wake.wait(), timeout=min(remaining, 30.0)
+                        self._wake.wait(), timeout=min(remaining, 5.0)
                     )
                 except asyncio.TimeoutError:
                     pass
@@ -504,7 +508,7 @@ class FollowupRunner:
                 if not self._store.mark_notified(deal.wallet, deal.token):
                     continue
                 try:
-                    await send_followup_deal(
+                    hp = await send_followup_deal(
                         chat,
                         wallet=deal.wallet,
                         token=deal.token,
@@ -516,20 +520,14 @@ class FollowupRunner:
                     )
                     self._append_log(
                         "telegram",
-                        f"Алерт deal #{deal.deal_index} (из автопарса)",
+                        f"Алерт deal #{deal.deal_index} (из автопарса)"
+                        + (" · HONEYPOT" if hp else ""),
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Follow-up alert failed: %s", exc)
         return len(inserted)
 
     async def _cycle_body(self, cfg: FollowupConfig) -> None:
-        pruned = await self._prune_stale_wallets(cfg)
-        if pruned:
-            self._append_log(
-                "prune",
-                f"Удалено {pruned} кош. (токен #1/#2/#3 не дошёл до ATH за срок)",
-            )
-
         wallets = self._store.list_watching()
         self._last_checked = len(wallets)
         self._last_new_deals = 0
@@ -538,6 +536,12 @@ class FollowupRunner:
         if not wallets:
             self._last_message = "Нет кошельков в статусе watching"
             self._append_log("idle", self._last_message)
+            pruned = await self._prune_stale_wallets(cfg)
+            if pruned:
+                self._append_log(
+                    "prune",
+                    f"Удалено {pruned} кош. (токен #1/#2/#3 не дошёл до ATH за срок)",
+                )
             return
 
         chat = resolve_chat_id(cfg.telegram_chat_id)
@@ -555,6 +559,61 @@ class FollowupRunner:
         done_count = 0
         skipped_alerts = 0
         progress_lock = asyncio.Lock()
+
+        async def _alert_deals(
+            wallet: str, new_deals: list[tuple[Any, str | None]]
+        ) -> None:
+            """Send TG as soon as this wallet's scan finishes (don't wait for all).
+
+            Honeypot is already resolved during scan (or checked here before send).
+            """
+            nonlocal skipped_alerts
+            if not new_deals or self._stop_requested:
+                return
+            gate = alert_kwargs_for_wallet(cfg, filters_map.get(wallet))
+            for deal, hp_reason in new_deals:
+                if self._stop_requested:
+                    return
+                async with progress_lock:
+                    self._last_new_deals += 1
+                if not should_alert_deal(
+                    deal.deal_index,
+                    deal.mcap_at_buy,
+                    bought_usd=deal.bought_usd,
+                    **gate,
+                ):
+                    async with progress_lock:
+                        skipped_alerts += 1
+                    continue
+                if not tg_ok:
+                    self._last_error = "Telegram не настроен"
+                    continue
+                if not self._store.mark_notified(deal.wallet, deal.token):
+                    continue
+                try:
+                    # Order: honeypot already done during scan → then TG.
+                    hp = await send_followup_deal(
+                        chat,
+                        wallet=deal.wallet,
+                        token=deal.token,
+                        token_symbol=deal.token_symbol,
+                        deal_index=deal.deal_index,
+                        mcap_at_buy=deal.mcap_at_buy,
+                        bought_usd=deal.bought_usd,
+                        topic_id=topic_id,
+                        honeypot_reason=hp_reason,
+                        check_honeypot=False,
+                    )
+                    async with progress_lock:
+                        self._last_alerts_sent += 1
+                    self._append_log(
+                        "telegram",
+                        f"Алерт deal #{deal.deal_index} · {wallet[:10]}…"
+                        + (" · HONEYPOT" if hp else ""),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Follow-up alert failed: %s", exc)
+                    self._last_error = str(exc)
 
         async def _scan_one(wallet: str) -> tuple[str, list]:
             nonlocal done_count
@@ -578,55 +637,29 @@ class FollowupRunner:
                     self._append_log("scan", self._last_message, percent=pct)
             return wallet, deals
 
-        results = await asyncio.gather(
-            *[_scan_one(w) for w in wallets],
-            return_exceptions=True,
-        )
-
-        for item in results:
-            if self._stop_requested:
-                self._last_message = "Остановлено"
-                self._append_log("stop", self._last_message)
-                break
-            if isinstance(item, BaseException):
-                logger.warning("Follow-up gather: %s", item)
-                continue
-            wallet, new_deals = item
-            gate = alert_kwargs_for_wallet(cfg, filters_map.get(wallet))
-            for deal in new_deals:
-                self._last_new_deals += 1
-                if not should_alert_deal(
-                    deal.deal_index,
-                    deal.mcap_at_buy,
-                    bought_usd=deal.bought_usd,
-                    **gate,
-                ):
-                    skipped_alerts += 1
-                    continue
-                if not tg_ok:
-                    self._last_error = "Telegram не настроен"
-                    continue
-                if not self._store.mark_notified(deal.wallet, deal.token):
-                    continue
+        tasks = [asyncio.create_task(_scan_one(w)) for w in wallets]
+        try:
+            for fut in asyncio.as_completed(tasks):
+                if self._stop_requested:
+                    break
                 try:
-                    await send_followup_deal(
-                        chat,
-                        wallet=deal.wallet,
-                        token=deal.token,
-                        token_symbol=deal.token_symbol,
-                        deal_index=deal.deal_index,
-                        mcap_at_buy=deal.mcap_at_buy,
-                        bought_usd=deal.bought_usd,
-                        topic_id=topic_id,
-                    )
-                    self._last_alerts_sent += 1
-                    self._append_log(
-                        "telegram",
-                        f"Алерт deal #{deal.deal_index} · {wallet[:10]}…",
-                    )
+                    item = await fut
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("Follow-up alert failed: %s", exc)
-                    self._last_error = str(exc)
+                    logger.warning("Follow-up gather: %s", exc)
+                    continue
+                wallet, new_deals = item
+                await _alert_deals(wallet, new_deals)
+        finally:
+            if self._stop_requested:
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        if self._stop_requested:
+            self._last_message = "Остановлено"
+            self._append_log("stop", self._last_message)
+            return
 
         if skipped_alerts:
             self._append_log(
@@ -641,6 +674,15 @@ class FollowupRunner:
                 f"{self._last_alerts_sent} алертов"
             )
             self._append_log("done", self._last_message, percent=100)
+
+        # Prune after alerts so honeypot/TG path is not blocked by ATH fetches.
+        if not self._stop_requested:
+            pruned = await self._prune_stale_wallets(cfg)
+            if pruned:
+                self._append_log(
+                    "prune",
+                    f"Удалено {pruned} кош. (токен #1/#2/#3 не дошёл до ATH за срок)",
+                )
 
     async def _prune_stale_wallets(self, cfg: FollowupConfig) -> int:
         """Remove wallets when discovery/#2/#3 tokens never hit ATH in time.
@@ -788,7 +830,6 @@ class FollowupRunner:
         known = self._store.known_tokens(wallet)
         # Newest-first pages: overwrite so the oldest post-watermark buy per token wins.
         candidates: dict[str, tuple[str, str, dict[str, Any], int]] = {}
-        max_block_seen = last_seen
         pages = max(1, int(cfg.scan_max_pages or 3))
         # Existing wallets after upgrade: peek tip once, set watermark, don't invent
         # deal #2/#3 from old transfer history.
@@ -798,65 +839,89 @@ class FollowupRunner:
         elif last_seen <= 0:
             pages = max(pages, 6)
 
-        async for item in iter_address_token_transfers(wallet, max_pages=pages):
-            block = _transfer_block(item)
-            if block > max_block_seen:
-                max_block_seen = block
-            if bootstrap:
-                continue
-            # Only transfers after discovery watermark (deal #2/#3 going forward).
-            if last_seen > 0:
-                if block <= 0:
-                    # Missing block metadata after watermark — skip (don't invent deals).
-                    continue
-                if block <= last_seen:
-                    break
-            token, sym = _token_meta(item)
-            if not token or token in QUOTE_TOKENS or token in known:
-                continue
-            if not _is_buy_like_transfer(
-                item,
-                wallet,
-                buys_only=cfg.buys_only,
-                track_transfers=cfg.track_transfers,
-            ):
-                continue
-            tx = str(item.get("transaction_hash") or item.get("tx_hash") or "")
-            candidates[token] = (sym, tx, item, block)
+        # Inbound-only: outbound sells used to fill newest pages and bury the buy,
+        # then an aggressive watermark advance skipped that buy forever.
+        items, tip_block, caught_up = await scan_address_token_transfers(
+            wallet,
+            max_pages=pages,
+            after_block=0 if bootstrap else last_seen,
+            direction="to",
+        )
+        max_block_seen = max(last_seen, tip_block)
 
-        if max_block_seen > last_seen:
+        if not bootstrap:
+            for item in items:
+                block = _transfer_block(item)
+                token, sym = _token_meta(item)
+                if not token or token in QUOTE_TOKENS or token in known:
+                    continue
+                if not _is_buy_like_transfer(
+                    item,
+                    wallet,
+                    buys_only=cfg.buys_only,
+                    track_transfers=cfg.track_transfers,
+                ):
+                    continue
+                tx = str(item.get("transaction_hash") or item.get("tx_hash") or "")
+                candidates[token] = (sym, tx, item, block)
+
+        # Only advance watermark after a full catch-up (hit last_seen or no more pages).
+        # Partial page windows must retry — otherwise sells bury earlier unique-token buys.
+        if bootstrap:
+            self._store.advance_last_seen_block(wallet, max(1, max_block_seen))
+        elif caught_up and max_block_seen > last_seen:
             self._store.advance_last_seen_block(wallet, max_block_seen)
-        elif bootstrap:
-            # No block numbers from API — still mark warm so we don't re-bootstrap.
-            self._store.advance_last_seen_block(wallet, 1)
 
         if not candidates:
             return []
 
         ordered = sorted(candidates.items(), key=lambda kv: kv[1][3] or 0)
         remaining = cfg.max_deals - deal_count
-        out = []
+        out: list[tuple[Any, str | None]] = []
         for token, (sym, tx, item, _block) in ordered:
             if self._stop_requested or remaining <= 0:
                 break
             if token in self._store.known_tokens(wallet):
                 continue
-            mcap = None
-            bought_usd = None
-            if tx:
-                try:
-                    from .replay import estimate_entry_at_tx
 
-                    entry = await estimate_entry_at_tx(token, tx, rpc=rpc)
-                    mcap = entry.mcap
-                    bought_usd = entry.bought_usd
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("mcap_at_tx failed: %s", exc)
-            if mcap is None:
-                mcap, price = await estimate_token_quote(token)
-                if bought_usd is None:
-                    bought_usd = estimate_bought_usd(item, price)
-            # Skip second DexScreener when on-chain entry already gave mcap (+ optional USD).
+            async def _resolve_mcap(
+                tok: str = token,
+                txh: str = tx,
+                it: dict[str, Any] = item,
+            ) -> tuple[float | None, float | None]:
+                mcap_v: float | None = None
+                bought_v: float | None = None
+                if txh:
+                    try:
+                        from .replay import estimate_entry_at_tx
+
+                        entry = await estimate_entry_at_tx(tok, txh, rpc=rpc)
+                        mcap_v = entry.mcap
+                        bought_v = entry.bought_usd
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("mcap_at_tx failed: %s", exc)
+                if mcap_v is None:
+                    mcap_v, price = await estimate_token_quote(tok)
+                    if bought_v is None:
+                        bought_v = estimate_bought_usd(it, price)
+                return mcap_v, bought_v
+
+            async def _resolve_honeypot(tok: str = token) -> str | None:
+                try:
+                    from .security import honeypot_reason_for_token
+
+                    return await asyncio.wait_for(
+                        honeypot_reason_for_token(tok),
+                        timeout=8.0,
+                    )
+                except Exception:  # noqa: BLE001
+                    return None
+
+            # Honeypot in parallel with mcap — still finished before TG send.
+            (mcap, bought_usd), hp_reason = await asyncio.gather(
+                _resolve_mcap(),
+                _resolve_honeypot(),
+            )
             deal = self._store.record_deal(
                 wallet=wallet,
                 token=token,
@@ -867,7 +932,7 @@ class FollowupRunner:
                 max_deals=cfg.max_deals,
             )
             if deal:
-                out.append(deal)
+                out.append((deal, hp_reason))
                 remaining -= 1
         return out
 

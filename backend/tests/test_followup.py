@@ -712,3 +712,189 @@ def test_record_deal_stores_bought_usd(tmp_path):
     assert rows[0].wallet_balance_eth == 1.5
     assert rows[0].tokens_traded_7d == 4
     assert any(d.bought_usd == 250.0 for d in rows[0].deals)
+
+
+@pytest.mark.asyncio
+async def test_scan_transfers_inbound_and_watermark_catchup(monkeypatch):
+    """Inbound filter + no tip advance until catch-up past after_block."""
+    from app import blockscout
+
+    wallet = "0xaaa0000000000000000000000000000000000001"
+    buy_token = "0xbbb0000000000000000000000000000000000002"
+    # Newest-first inbound pages (as Blockscout returns with filter=to).
+    pages = [
+        {
+            "items": [
+                {
+                    "block_number": 1100,
+                    "to": {"hash": wallet},
+                    "from": {"hash": "0xdex", "is_contract": True},
+                    "token": {"address_hash": "0xtip", "symbol": "TIP"},
+                    "transaction_hash": "0xtip",
+                }
+            ],
+            "next_page_params": {"block_number": 1050, "index": 0},
+        },
+        {
+            "items": [
+                {
+                    "block_number": 1050,
+                    "to": {"hash": wallet},
+                    "from": {"hash": "0xdex", "is_contract": True},
+                    "token": {"address_hash": buy_token, "symbol": "NEW"},
+                    "transaction_hash": "0xbuy",
+                },
+                {
+                    "block_number": 1000,
+                    "to": {"hash": wallet},
+                    "from": {"hash": "0xdex", "is_contract": True},
+                    "token": {"address_hash": "0xfirst", "symbol": "T1"},
+                    "transaction_hash": "0xfirst",
+                },
+            ],
+            "next_page_params": None,
+        },
+    ]
+    calls: list[dict] = []
+
+    async def fake_get(path: str, params=None, **_kw):
+        calls.append(dict(params or {}))
+        idx = len(calls) - 1
+        assert idx < len(pages)
+        return 200, pages[idx]
+
+    monkeypatch.setattr(blockscout, "_get_json", fake_get)
+
+    items, tip, caught = await blockscout.scan_address_token_transfers(
+        wallet, max_pages=2, after_block=1000, direction="to"
+    )
+    assert all(c.get("filter") == "to" for c in calls)
+    assert tip == 1100
+    assert caught is True
+    assert [i["transaction_hash"] for i in items] == ["0xtip", "0xbuy"]
+
+    # Only 1 page budget: buy @1050 still unread → not caught up.
+    calls.clear()
+    items2, tip2, caught2 = await blockscout.scan_address_token_transfers(
+        wallet, max_pages=1, after_block=1000, direction="to"
+    )
+    assert caught2 is False
+    assert tip2 == 1100
+    assert [i["transaction_hash"] for i in items2] == ["0xtip"]
+
+
+@pytest.mark.asyncio
+async def test_scan_wallet_records_buy_before_watermark_advance(tmp_path, monkeypatch):
+    from app.followup import FollowupRunner
+    from app.models import BuyerRow, FollowupConfig
+
+    store = FollowupStore(
+        db_path=str(tmp_path / "followup.db"),
+        config_path=str(tmp_path / "followup.json"),
+    )
+    wallet = "0xAAA0000000000000000000000000000000000001"
+    store.ingest_buyers(
+        [
+            BuyerRow(
+                wallet=wallet,
+                token="0xBBB0000000000000000000000000000000000001",
+                token_symbol="T1",
+                bought_tokens=1.0,
+                bought_usd=100.0,
+                mcap_at_first_buy=8_000.0,
+                buys_count=1,
+                first_block=1000,
+                first_tx="0xtx1",
+            )
+        ],
+        max_deals=3,
+        max_mcap_alert=50_000,
+    )
+    store.advance_last_seen_block(wallet, 1000)
+
+    buy_token = "0xccc0000000000000000000000000000000000002"
+
+    async def fake_scan(addr, *, max_pages=8, after_block=0, direction="to"):
+        assert direction == "to"
+        assert after_block == 1000
+        return (
+            [
+                {
+                    "block_number": 1050,
+                    "to": {"hash": wallet.lower()},
+                    "from": {"hash": "0xdex", "is_contract": True},
+                    "token": {"address_hash": buy_token, "symbol": "NEW"},
+                    "transaction_hash": "0xbuy2",
+                }
+            ],
+            1050,
+            True,
+        )
+
+    async def fake_quote(_token: str):
+        return 9_000.0, 0.01
+
+    async def fake_hp(_token: str):
+        return None
+
+    monkeypatch.setattr("app.followup.scan_address_token_transfers", fake_scan)
+    monkeypatch.setattr("app.followup.estimate_token_quote", fake_quote)
+    monkeypatch.setattr("app.security.honeypot_reason_for_token", fake_hp)
+
+    runner = FollowupRunner(store=store)
+    deals = await runner._scan_wallet(
+        wallet.lower(), FollowupConfig(buys_only=True, scan_max_pages=3)
+    )
+    assert len(deals) == 1
+    deal, hp = deals[0]
+    assert deal.deal_index == 2
+    assert deal.token == buy_token
+    assert hp is None
+    last_seen, _, _ = store.get_wallet_scan_meta(wallet.lower())
+    assert last_seen == 1050
+
+
+@pytest.mark.asyncio
+async def test_scan_wallet_does_not_advance_watermark_when_not_caught_up(
+    tmp_path, monkeypatch
+):
+    from app.followup import FollowupRunner
+    from app.models import BuyerRow, FollowupConfig
+
+    store = FollowupStore(
+        db_path=str(tmp_path / "followup.db"),
+        config_path=str(tmp_path / "followup.json"),
+    )
+    wallet = "0xAAA0000000000000000000000000000000000001"
+    store.ingest_buyers(
+        [
+            BuyerRow(
+                wallet=wallet,
+                token="0xBBB0000000000000000000000000000000000001",
+                token_symbol="T1",
+                bought_tokens=1.0,
+                bought_usd=100.0,
+                mcap_at_first_buy=8_000.0,
+                buys_count=1,
+                first_block=1000,
+                first_tx="0xtx1",
+            )
+        ],
+        max_deals=3,
+        max_mcap_alert=50_000,
+    )
+    store.advance_last_seen_block(wallet, 1000)
+
+    async def fake_scan(addr, *, max_pages=8, after_block=0, direction="to"):
+        # Tip sell noise only — buy still unread below page budget.
+        return [], 1200, False
+
+    monkeypatch.setattr("app.followup.scan_address_token_transfers", fake_scan)
+
+    runner = FollowupRunner(store=store)
+    deals = await runner._scan_wallet(
+        wallet.lower(), FollowupConfig(buys_only=True, scan_max_pages=1)
+    )
+    assert deals == []
+    last_seen, _, _ = store.get_wallet_scan_meta(wallet.lower())
+    assert last_seen == 1000  # must NOT jump to tip

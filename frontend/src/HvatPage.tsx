@@ -230,7 +230,7 @@ const DEFAULT_ALERT: AlertForm = {
   min_bought_usd: '',
   max_bought_usd: '',
   telegram_topic_id: '9245',
-  prune_enabled: true,
+  prune_enabled: false,
   prune_min_ath_mcap: '50000',
   prune_after_hours: '48',
 }
@@ -362,7 +362,7 @@ function fmtWalletFilters(wf?: WalletAlertFilters, global?: FollowupConfig | nul
   const minM = wf.min_mcap_alert
   const minB = wf.min_bought_usd
   const maxB = wf.max_bought_usd
-  const pruneOn = wf.prune_enabled ?? global?.prune_enabled ?? true
+  const pruneOn = wf.prune_enabled ?? global?.prune_enabled ?? false
   const ath = wf.prune_min_ath_mcap ?? global?.prune_min_ath_mcap ?? 50_000
   const hrs = wf.prune_after_hours ?? global?.prune_after_hours ?? 48
   const prune = pruneOn ? `ATH≥${fmtNum(ath)}/${hrs}ч` : 'prune off'

@@ -121,13 +121,33 @@ async def iter_token_transfers(token: str) -> AsyncIterator[dict[str, Any]]:
         params = next_params
 
 
+def _transfer_block_number(item: dict[str, Any]) -> int:
+    raw = item.get("block_number")
+    if raw is None:
+        raw = item.get("blockNumber")
+    if raw is None:
+        return 0
+    try:
+        if isinstance(raw, str) and raw.startswith(("0x", "0X")):
+            return int(raw, 16)
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
 async def iter_address_token_transfers(
     wallet: str,
     *,
     max_pages: int = 8,
+    direction: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Paginate ERC-20 transfers for a wallet (newest first)."""
+    """Paginate ERC-20 transfers for a wallet (newest first).
+
+    ``direction``: ``\"to\"`` = inbound only, ``\"from\"`` = outbound, ``None`` = all.
+    """
     params: dict[str, Any] = {}
+    if direction:
+        params["filter"] = direction
     for _ in range(max(1, max_pages)):
         got = await _get_json(f"/addresses/{wallet}/token-transfers", params=params)
         if got is None:
@@ -144,4 +164,71 @@ async def iter_address_token_transfers(
         next_params = data.get("next_page_params")
         if not next_params or not items:
             return
-        params = next_params
+        params = dict(next_params)
+        if direction and "filter" not in params:
+            params["filter"] = direction
+
+
+async def scan_address_token_transfers(
+    wallet: str,
+    *,
+    max_pages: int = 8,
+    after_block: int = 0,
+    direction: str | None = "to",
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """Fetch newest-first wallet transfers with catch-up semantics.
+
+    Returns ``(items, max_block_seen, caught_up)``.
+
+    Items are only those with ``block > after_block`` (when ``after_block > 0``).
+    ``caught_up`` is True when the scan reached ``after_block`` or exhausted
+    Blockscout pages. If ``max_pages`` runs out first, ``caught_up`` is False —
+    the caller must not advance a watermark past unread history (sells/noise
+    otherwise bury earlier buys forever).
+    """
+    params: dict[str, Any] = {}
+    if direction:
+        params["filter"] = direction
+    items_out: list[dict[str, Any]] = []
+    max_block_seen = 0
+    caught_up = False
+    pages = max(1, max_pages)
+
+    for _ in range(pages):
+        got = await _get_json(f"/addresses/{wallet}/token-transfers", params=params)
+        if got is None:
+            # Transient failure — do not claim catch-up (retry next cycle).
+            return items_out, max_block_seen, False
+        status, data = got
+        if status == 404:
+            return items_out, max_block_seen, True
+        if status != 200 or not isinstance(data, dict):
+            logger.warning("Blockscout wallet transfers %s", status)
+            return items_out, max_block_seen, False
+        items = data.get("items") or []
+        next_params = data.get("next_page_params")
+        if not items:
+            caught_up = True
+            break
+        page_hit_wm = False
+        for item in items:
+            block = _transfer_block_number(item)
+            if block > max_block_seen:
+                max_block_seen = block
+            if after_block > 0:
+                if block <= 0:
+                    continue
+                if block <= after_block:
+                    page_hit_wm = True
+                    caught_up = True
+                    break
+            items_out.append(item)
+        if page_hit_wm:
+            break
+        if not next_params:
+            caught_up = True
+            break
+        params = dict(next_params)
+        if direction and "filter" not in params:
+            params["filter"] = direction
+    return items_out, max_block_seen, caught_up

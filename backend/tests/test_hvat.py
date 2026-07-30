@@ -51,7 +51,7 @@ def test_apply_hvat_profile(tmp_path: Path, monkeypatch):
     assert f.ingest_from_watch is True
     assert f.alert_on_deals == [2, 3]
     assert f.telegram_topic_id == HVAT_FOLLOWUP_TOPIC
-    assert f.prune_enabled is True
+    assert f.prune_enabled is False
     assert f.prune_min_ath_mcap == 50_000
     assert f.prune_after_hours == 48
 

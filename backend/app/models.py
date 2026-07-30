@@ -293,7 +293,8 @@ class FollowupConfig(BaseModel):
     """Watchlist of early buyers → alert on 2nd/3rd new-token buy @ low mcap."""
 
     enabled: bool = False
-    interval_sec: int = Field(default=300, ge=60, le=86400)
+    # Target seconds between follow-up cycle starts (alerts for deals #2/#3).
+    interval_sec: int = Field(default=5, ge=5, le=86400)
     # Alert only when buy mcap is at or below this (USD). High mcap → record, no alert.
     max_mcap_alert: float = Field(default=20_000.0, ge=0)
     # Optional lower bound (USD). None = no floor.
@@ -318,11 +319,11 @@ class FollowupConfig(BaseModel):
     # When True, ingest early buyers from autoparse into the follow-up table.
     ingest_from_watch: bool = True
     # Parallel wallet scans per cycle (Blockscout + RPC).
-    scan_concurrency: int = Field(default=6, ge=1, le=32)
+    scan_concurrency: int = Field(default=16, ge=1, le=32)
     # Max Blockscout pages per wallet (newest-first). With watermark usually 1–2.
     scan_max_pages: int = Field(default=3, ge=1, le=20)
     # Drop wallet if discovery token never reached this ATH mcap (USD) in time.
-    prune_enabled: bool = True
+    prune_enabled: bool = False
     prune_min_ath_mcap: float = Field(default=50_000.0, ge=0)
     # Hours after discovery before prune check (48 = 2 days).
     prune_after_hours: float = Field(default=48.0, ge=1, le=24 * 30)

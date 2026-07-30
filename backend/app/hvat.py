@@ -66,7 +66,7 @@ def apply_hvat_profile(*, enable: bool = True) -> dict[str, Any]:
             "telegram_chat_id": tg_chat,
             "telegram_topic_id": tg_topic,
             "bot_commands_enabled": True,
-            "prune_enabled": True if fcfg.prune_enabled is None else fcfg.prune_enabled,
+            "prune_enabled": False if fcfg.prune_enabled is None else fcfg.prune_enabled,
             "prune_min_ath_mcap": float(fcfg.prune_min_ath_mcap or 50_000.0),
             "prune_after_hours": float(fcfg.prune_after_hours or 48.0),
         }
