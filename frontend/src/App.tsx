@@ -870,13 +870,13 @@ export default function App() {
         <MigrationsPage onParse={useInBuyers} />
       </div>
       <div hidden={page !== 'hvat'}>
-        <HvatPage />
+        <HvatPage tabActive={page === 'hvat'} />
       </div>
       <div hidden={page !== 'watch'}>
         <WatchPage />
       </div>
       <div hidden={page !== 'followup'}>
-        <FollowupPage />
+        <FollowupPage tabActive={page === 'followup'} />
       </div>
       <div hidden={page !== 'settings'}>
         <SettingsPage />

@@ -111,6 +111,485 @@ def test_ingest_and_second_deal(tmp_path):
     assert rows[0].deal_count == 3
 
 
+def test_ingest_seeds_last_seen_block(tmp_path):
+    store = FollowupStore(
+        db_path=str(tmp_path / "followup.db"),
+        config_path=str(tmp_path / "followup.json"),
+    )
+    b1 = BuyerRow(
+        wallet="0xAAA0000000000000000000000000000000000001",
+        token="0xBBB0000000000000000000000000000000000001",
+        token_symbol="T1",
+        bought_tokens=1.0,
+        bought_usd=100.0,
+        mcap_at_first_buy=8_000.0,
+        buys_count=1,
+        first_tx="0xtx1",
+        first_block=1_234_567,
+    )
+    store.ingest_buyers([b1], max_deals=3, max_mcap_alert=15_000)
+    block, deal_count, status = store.get_wallet_scan_meta(b1.wallet)
+    assert block == 1_234_567
+    assert deal_count == 1
+    assert status == "watching"
+    store.advance_last_seen_block(b1.wallet, 1_234_600)
+    block2, _, _ = store.get_wallet_scan_meta(b1.wallet)
+    assert block2 == 1_234_600
+    store.advance_last_seen_block(b1.wallet, 1_234_500)  # older — no regress
+    block3, _, _ = store.get_wallet_scan_meta(b1.wallet)
+    assert block3 == 1_234_600
+
+
+def test_list_wallets_batches_deals(tmp_path):
+    store = FollowupStore(
+        db_path=str(tmp_path / "followup.db"),
+        config_path=str(tmp_path / "followup.json"),
+    )
+    for i in range(3):
+        store.ingest_buyers(
+            [
+                BuyerRow(
+                    wallet=f"0xaaa000000000000000000000000000000000000{i}",
+                    token=f"0xbbb000000000000000000000000000000000000{i}",
+                    bought_tokens=1.0,
+                    bought_usd=10.0,
+                    mcap_at_first_buy=5_000.0,
+                    buys_count=1,
+                    first_block=100 + i,
+                )
+            ],
+            max_deals=3,
+        )
+    rows = store.list_wallets()
+    assert len(rows) == 3
+    assert all(len(r.deals) == 1 for r in rows)
+
+
+def test_prune_settings_for_wallet():
+    from app.followup import prune_settings_for_wallet
+    from app.models import FollowupConfig, WalletAlertFilters
+
+    cfg = FollowupConfig(
+        prune_enabled=True,
+        prune_min_ath_mcap=50_000,
+        prune_after_hours=48,
+    )
+    assert prune_settings_for_wallet(cfg, None) == (True, 50_000.0, 48.0)
+    assert prune_settings_for_wallet(cfg, WalletAlertFilters()) == (True, 50_000.0, 48.0)
+
+    custom = WalletAlertFilters(
+        custom=True,
+        prune_enabled=False,
+        prune_min_ath_mcap=100_000,
+        prune_after_hours=72,
+    )
+    assert prune_settings_for_wallet(cfg, custom) == (False, 100_000.0, 72.0)
+
+    partial = WalletAlertFilters(custom=True, prune_after_hours=24)
+    enabled, ath, hours = prune_settings_for_wallet(cfg, partial)
+    assert enabled is True
+    assert ath == 50_000.0
+    assert hours == 24.0
+
+
+@pytest.mark.asyncio
+async def test_prune_stale_wallets_deletes_low_ath(tmp_path, monkeypatch):
+    from app.followup import FollowupRunner, PeakMcapEstimate
+    from app.followup_store import FollowupStore
+    from app.models import BuyerRow, FollowupConfig
+
+    store = FollowupStore(
+        db_path=str(tmp_path / "followup.db"),
+        config_path=str(tmp_path / "followup.json"),
+    )
+    store.ingest_buyers(
+        [
+            BuyerRow(
+                wallet="0xAAA0000000000000000000000000000000000001",
+                token="0xBBB0000000000000000000000000000000000001",
+                bought_tokens=1.0,
+                bought_usd=50.0,
+                mcap_at_first_buy=8_000.0,
+                buys_count=1,
+                first_block=100,
+            )
+        ],
+        max_deals=3,
+    )
+    # Backdate discovery beyond 48h
+    import sqlite3
+    import time as time_mod
+
+    past = time_mod.time() - 50 * 3600
+    with sqlite3.connect(str(tmp_path / "followup.db")) as conn:
+        conn.execute(
+            "UPDATE wallets SET discovered_at=? WHERE address=?",
+            (past, "0xaaa0000000000000000000000000000000000001"),
+        )
+        conn.commit()
+
+    async def fake_peak(_token: str, *, min_needed: float = 0.0):
+        return PeakMcapEstimate(peak=12_000.0, reliable=True)
+
+    monkeypatch.setattr("app.followup.estimate_token_peak_mcap", fake_peak)
+    runner = FollowupRunner(store=store)
+    cfg = FollowupConfig(
+        prune_enabled=True,
+        prune_min_ath_mcap=50_000,
+        prune_after_hours=48,
+    )
+    removed = await runner._prune_stale_wallets(cfg)
+    assert removed == 1
+    assert store.list_watching() == []
+
+
+@pytest.mark.asyncio
+async def test_prune_keeps_unreliable_spot_only(tmp_path, monkeypatch):
+    from app.followup import FollowupRunner, PeakMcapEstimate
+    from app.followup_store import FollowupStore
+    from app.models import BuyerRow, FollowupConfig
+    import sqlite3
+    import time as time_mod
+
+    store = FollowupStore(
+        db_path=str(tmp_path / "followup.db"),
+        config_path=str(tmp_path / "followup.json"),
+    )
+    store.ingest_buyers(
+        [
+            BuyerRow(
+                wallet="0xAAA0000000000000000000000000000000000001",
+                token="0xBBB0000000000000000000000000000000000001",
+                bought_tokens=1.0,
+                bought_usd=50.0,
+                mcap_at_first_buy=8_000.0,
+                buys_count=1,
+                first_block=100,
+            )
+        ],
+        max_deals=3,
+    )
+    past = time_mod.time() - 50 * 3600
+    with sqlite3.connect(str(tmp_path / "followup.db")) as conn:
+        conn.execute(
+            "UPDATE wallets SET discovered_at=? WHERE address=?",
+            (past, "0xaaa0000000000000000000000000000000000001"),
+        )
+        conn.commit()
+
+    async def fake_peak(_token: str, *, min_needed: float = 0.0):
+        return PeakMcapEstimate(peak=8_000.0, reliable=False)
+
+    monkeypatch.setattr("app.followup.estimate_token_peak_mcap", fake_peak)
+    runner = FollowupRunner(store=store)
+    removed = await runner._prune_stale_wallets(
+        FollowupConfig(prune_enabled=True, prune_min_ath_mcap=50_000, prune_after_hours=48)
+    )
+    assert removed == 0
+    assert len(store.list_watching()) == 1
+
+
+@pytest.mark.asyncio
+async def test_prune_deal2_ath_fail_deletes(tmp_path, monkeypatch):
+    from app.followup import FollowupRunner, PeakMcapEstimate
+    from app.followup_store import FollowupStore
+    from app.models import BuyerRow, FollowupConfig
+    import sqlite3
+    import time as time_mod
+
+    store = FollowupStore(
+        db_path=str(tmp_path / "followup.db"),
+        config_path=str(tmp_path / "followup.json"),
+    )
+    w = "0xAAA0000000000000000000000000000000000001"
+    t2 = "0xCCC0000000000000000000000000000000000002"
+    store.ingest_buyers(
+        [
+            BuyerRow(
+                wallet=w,
+                token="0xBBB0000000000000000000000000000000000001",
+                bought_tokens=1.0,
+                bought_usd=50.0,
+                mcap_at_first_buy=8_000.0,
+                buys_count=1,
+                first_block=100,
+            )
+        ],
+        max_deals=3,
+    )
+    store.record_deal(wallet=w, token=t2, token_symbol="T2", mcap_at_buy=9_000.0, max_deals=3)
+    past = time_mod.time() - 50 * 3600
+    with sqlite3.connect(str(tmp_path / "followup.db")) as conn:
+        conn.execute(
+            "UPDATE deals SET created_at=? WHERE wallet=? AND deal_index=2",
+            (past, w.lower()),
+        )
+        conn.commit()
+
+    async def fake_peak(token: str, *, min_needed: float = 0.0):
+        # Only T2 fails; discovery would also fail but deal_count>1 skips #1 path.
+        return PeakMcapEstimate(peak=2_000.0, reliable=True)
+
+    monkeypatch.setattr("app.followup.estimate_token_peak_mcap", fake_peak)
+    runner = FollowupRunner(store=store)
+    removed = await runner._prune_stale_wallets(
+        FollowupConfig(prune_enabled=True, prune_min_ath_mcap=50_000, prune_after_hours=48)
+    )
+    assert removed == 1
+    assert store.list_watching() == []
+
+
+@pytest.mark.asyncio
+async def test_prune_deal2_window_not_expired_keeps(tmp_path, monkeypatch):
+    from app.followup import FollowupRunner, PeakMcapEstimate
+    from app.followup_store import FollowupStore
+    from app.models import BuyerRow, FollowupConfig
+
+    store = FollowupStore(
+        db_path=str(tmp_path / "followup.db"),
+        config_path=str(tmp_path / "followup.json"),
+    )
+    w = "0xAAA0000000000000000000000000000000000001"
+    store.ingest_buyers(
+        [
+            BuyerRow(
+                wallet=w,
+                token="0xBBB0000000000000000000000000000000000001",
+                bought_tokens=1.0,
+                bought_usd=50.0,
+                mcap_at_first_buy=8_000.0,
+                buys_count=1,
+                first_block=100,
+            )
+        ],
+        max_deals=3,
+    )
+    store.record_deal(
+        wallet=w,
+        token="0xCCC0000000000000000000000000000000000002",
+        token_symbol="T2",
+        mcap_at_buy=9_000.0,
+        max_deals=3,
+    )
+
+    async def fake_peak(_token: str, *, min_needed: float = 0.0):
+        return PeakMcapEstimate(peak=1_000.0, reliable=True)
+
+    monkeypatch.setattr("app.followup.estimate_token_peak_mcap", fake_peak)
+    runner = FollowupRunner(store=store)
+    removed = await runner._prune_stale_wallets(
+        FollowupConfig(prune_enabled=True, prune_min_ath_mcap=50_000, prune_after_hours=48)
+    )
+    assert removed == 0
+    assert w.lower() in store.list_watching()
+
+
+@pytest.mark.asyncio
+async def test_prune_after_deal3_done_ath_fail(tmp_path, monkeypatch):
+    """After 3rd deal (status=done), failed #3 ATH still deletes the wallet."""
+    from app.followup import FollowupRunner, PeakMcapEstimate
+    from app.followup_store import FollowupStore
+    from app.models import BuyerRow, FollowupConfig
+    import sqlite3
+    import time as time_mod
+
+    store = FollowupStore(
+        db_path=str(tmp_path / "followup.db"),
+        config_path=str(tmp_path / "followup.json"),
+    )
+    w = "0xAAA0000000000000000000000000000000000001"
+    store.ingest_buyers(
+        [
+            BuyerRow(
+                wallet=w,
+                token="0xBBB0000000000000000000000000000000000001",
+                bought_tokens=1.0,
+                bought_usd=50.0,
+                mcap_at_first_buy=8_000.0,
+                buys_count=1,
+                first_block=100,
+            )
+        ],
+        max_deals=3,
+    )
+    store.record_deal(
+        wallet=w,
+        token="0xCCC0000000000000000000000000000000000002",
+        mcap_at_buy=9_000.0,
+        max_deals=3,
+    )
+    store.record_deal(
+        wallet=w,
+        token="0xDDD0000000000000000000000000000000000003",
+        mcap_at_buy=10_000.0,
+        max_deals=3,
+    )
+    rows = store.list_wallets()
+    assert rows[0].status == "done"
+    assert rows[0].deal_count == 3
+
+    past = time_mod.time() - 50 * 3600
+    with sqlite3.connect(str(tmp_path / "followup.db")) as conn:
+        conn.execute(
+            "UPDATE deals SET created_at=? WHERE wallet=? AND deal_index IN (2, 3)",
+            (past, w.lower()),
+        )
+        conn.commit()
+
+    async def fake_peak(token: str, *, min_needed: float = 0.0):
+        # #2 passed, #3 failed
+        if token.endswith("0002"):
+            return PeakMcapEstimate(peak=80_000.0, reliable=True)
+        return PeakMcapEstimate(peak=5_000.0, reliable=True)
+
+    monkeypatch.setattr("app.followup.estimate_token_peak_mcap", fake_peak)
+    runner = FollowupRunner(store=store)
+    removed = await runner._prune_stale_wallets(
+        FollowupConfig(prune_enabled=True, prune_min_ath_mcap=50_000, prune_after_hours=48)
+    )
+    assert removed == 1
+    assert store.list_wallets() == []
+
+
+@pytest.mark.asyncio
+async def test_prune_marks_ath_passed_and_skips_next(tmp_path, monkeypatch):
+    from app.followup import FollowupRunner, PeakMcapEstimate
+    from app.followup_store import FollowupStore
+    from app.models import BuyerRow, FollowupConfig
+    import sqlite3
+    import time as time_mod
+
+    store = FollowupStore(
+        db_path=str(tmp_path / "followup.db"),
+        config_path=str(tmp_path / "followup.json"),
+    )
+    w = "0xAAA0000000000000000000000000000000000001"
+    t2 = "0xCCC0000000000000000000000000000000000002"
+    store.ingest_buyers(
+        [
+            BuyerRow(
+                wallet=w,
+                token="0xBBB0000000000000000000000000000000000001",
+                bought_tokens=1.0,
+                bought_usd=50.0,
+                mcap_at_first_buy=8_000.0,
+                buys_count=1,
+                first_block=100,
+            )
+        ],
+        max_deals=3,
+    )
+    store.record_deal(wallet=w, token=t2, mcap_at_buy=9_000.0, max_deals=3)
+    past = time_mod.time() - 50 * 3600
+    with sqlite3.connect(str(tmp_path / "followup.db")) as conn:
+        conn.execute(
+            "UPDATE deals SET created_at=? WHERE wallet=? AND deal_index=2",
+            (past, w.lower()),
+        )
+        conn.commit()
+
+    calls = {"n": 0}
+
+    async def fake_peak(_token: str, *, min_needed: float = 0.0):
+        calls["n"] += 1
+        return PeakMcapEstimate(peak=80_000.0, reliable=True)
+
+    monkeypatch.setattr("app.followup.estimate_token_peak_mcap", fake_peak)
+    # Avoid index short-circuit so we count network-style calls via fake_peak path
+    monkeypatch.setattr(
+        "app.token_index.token_index.mcap_peaks",
+        lambda _addrs=None: {},
+    )
+    runner = FollowupRunner(store=store)
+    cfg = FollowupConfig(prune_enabled=True, prune_min_ath_mcap=50_000, prune_after_hours=48)
+    assert await runner._prune_stale_wallets(cfg) == 0
+    assert calls["n"] == 1
+    row = store.list_for_ath_prune()[0]
+    assert any(d["deal_index"] == 2 and d["ath_passed"] for d in row["deals"])
+    # Second cycle must skip due to ath_passed (no peak fetch).
+    assert await runner._prune_stale_wallets(cfg) == 0
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_prune_deal1_not_queued_when_followup_exists(tmp_path, monkeypatch):
+    from app.followup import FollowupRunner, PeakMcapEstimate
+    from app.followup_store import FollowupStore
+    from app.models import BuyerRow, FollowupConfig
+    import sqlite3
+    import time as time_mod
+
+    store = FollowupStore(
+        db_path=str(tmp_path / "followup.db"),
+        config_path=str(tmp_path / "followup.json"),
+    )
+    w = "0xAAA0000000000000000000000000000000000001"
+    store.ingest_buyers(
+        [
+            BuyerRow(
+                wallet=w,
+                token="0xBBB0000000000000000000000000000000000001",
+                bought_tokens=1.0,
+                bought_usd=50.0,
+                mcap_at_first_buy=8_000.0,
+                buys_count=1,
+                first_block=100,
+            )
+        ],
+        max_deals=3,
+    )
+    store.record_deal(
+        wallet=w,
+        token="0xCCC0000000000000000000000000000000000002",
+        mcap_at_buy=9_000.0,
+        max_deals=3,
+    )
+    past = time_mod.time() - 50 * 3600
+    with sqlite3.connect(str(tmp_path / "followup.db")) as conn:
+        # Old discovery, but #2 window NOT expired — must not prune on #1.
+        conn.execute("UPDATE wallets SET discovered_at=? WHERE address=?", (past, w.lower()))
+        conn.commit()
+
+    async def fake_peak(_token: str, *, min_needed: float = 0.0):
+        return PeakMcapEstimate(peak=1_000.0, reliable=True)
+
+    monkeypatch.setattr("app.followup.estimate_token_peak_mcap", fake_peak)
+    runner = FollowupRunner(store=store)
+    removed = await runner._prune_stale_wallets(
+        FollowupConfig(prune_enabled=True, prune_min_ath_mcap=50_000, prune_after_hours=48)
+    )
+    assert removed == 0
+    assert w.lower() in store.list_watching()
+
+
+@pytest.mark.asyncio
+async def test_estimate_peak_short_circuits_gecko(monkeypatch):
+    from app.followup import estimate_token_peak_mcap
+
+    calls = {"gecko": 0}
+
+    async def fake_quote(_token: str):
+        return 60_000.0, 0.001
+
+    async def fake_gecko(_token: str):
+        calls["gecko"] += 1
+        raise AssertionError("gecko should be skipped")
+
+    monkeypatch.setattr("app.followup.estimate_token_quote", fake_quote)
+    monkeypatch.setattr("app.ath_gecko.fetch_token_ath_mcap", fake_gecko)
+    monkeypatch.setattr(
+        "app.token_index.token_index.mcap_peaks",
+        lambda _addrs=None: {},
+    )
+    est = await estimate_token_peak_mcap(
+        "0xbbb0000000000000000000000000000000000001",
+        min_needed=50_000,
+    )
+    assert est is not None
+    assert est.peak >= 50_000
+    assert calls["gecko"] == 0
+
+
 def test_skip_high_mcap_on_ingest(tmp_path):
     store = FollowupStore(
         db_path=str(tmp_path / "followup.db"),

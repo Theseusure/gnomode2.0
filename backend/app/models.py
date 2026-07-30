@@ -317,6 +317,15 @@ class FollowupConfig(BaseModel):
     raybot_enabled: bool = False
     # When True, ingest early buyers from autoparse into the follow-up table.
     ingest_from_watch: bool = True
+    # Parallel wallet scans per cycle (Blockscout + RPC).
+    scan_concurrency: int = Field(default=6, ge=1, le=32)
+    # Max Blockscout pages per wallet (newest-first). With watermark usually 1–2.
+    scan_max_pages: int = Field(default=3, ge=1, le=20)
+    # Drop wallet if discovery token never reached this ATH mcap (USD) in time.
+    prune_enabled: bool = True
+    prune_min_ath_mcap: float = Field(default=50_000.0, ge=0)
+    # Hours after discovery before prune check (48 = 2 days).
+    prune_after_hours: float = Field(default=48.0, ge=1, le=24 * 30)
 
 
 class FollowupDealRow(BaseModel):
@@ -331,6 +340,33 @@ class FollowupDealRow(BaseModel):
     created_at: float = 0.0
 
 
+class WalletAlertFilters(BaseModel):
+    """Per-wallet overrides for deal #2/#3 alerts and prune.
+
+    When ``custom`` is False, global FollowupConfig filters apply.
+    When True, these fields replace the global mcap/bought gates
+    (``None`` on min_* means no floor; max_mcap falls back to global if None).
+    Prune fields: ``None`` keeps the global prune value when custom.
+    """
+
+    custom: bool = False
+    max_mcap_alert: float | None = None
+    min_mcap_alert: float | None = None
+    min_bought_usd: float | None = None
+    max_bought_usd: float | None = None
+    # Auto-drop if discovery token ATH stays below threshold after N hours.
+    prune_enabled: bool | None = None
+    prune_min_ath_mcap: float | None = None
+    prune_after_hours: float | None = None
+
+
+class FollowupWalletFiltersUpdate(BaseModel):
+    """Apply alert filters to one or many tracked wallets."""
+
+    addresses: list[str] = Field(default_factory=list, min_length=1)
+    filters: WalletAlertFilters
+
+
 class FollowupWalletRow(BaseModel):
     address: str
     status: str = "watching"  # watching | done | paused
@@ -342,6 +378,7 @@ class FollowupWalletRow(BaseModel):
     first_mcap: float | None = None
     discovered_at: float = 0.0
     updated_at: float = 0.0
+    alert_filters: WalletAlertFilters = Field(default_factory=WalletAlertFilters)
     deals: list[FollowupDealRow] = Field(default_factory=list)
 
 

@@ -123,28 +123,52 @@ class FollowupBot:
             chat_id = str(chat.get("id") or "")
             if not chat_id:
                 continue
-            if not self._chat_allowed(chat_id):
+            chat_type = str(chat.get("type") or "")
+            if not self._chat_allowed(chat_id, chat_type=chat_type):
+                logger.info(
+                    "Follow-up bot ignored command from chat %s (type=%s)",
+                    chat_id,
+                    chat_type or "?",
+                )
                 continue
             # Strip @botname
             cmd = text.split()[0].split("@")[0].lower()
             args = text.split()[1:]
+            # Forum topics: reply in the same thread, else user only sees General.
+            thread_raw = msg.get("message_thread_id")
+            topic_id: int | None = None
+            if thread_raw is not None:
+                try:
+                    topic_id = int(thread_raw)
+                except (TypeError, ValueError):
+                    topic_id = None
             try:
                 reply = await self._handle(cmd, args)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Follow-up bot command failed")
                 reply = f"Ошибка: {exc}"
             try:
-                await send_message(chat_id, reply)
+                await send_message(chat_id, reply, topic_id=topic_id)
+                logger.info("Follow-up bot handled %s in chat %s topic=%s", cmd, chat_id, topic_id)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Follow-up bot reply failed: %s", exc)
 
-    def _chat_allowed(self, chat_id: str) -> bool:
-        """Only configured watch/followup chats (or any if none set — first setup)."""
+    def _chat_allowed(self, chat_id: str, *, chat_type: str = "") -> bool:
+        """Allow configured chats, watch chat, and private DMs to the bot."""
+        if chat_type == "private":
+            return True
         cfg = followup_store.load_config()
         allowed = {
             resolve_chat_id(cfg.telegram_chat_id),
             resolve_chat_id(),
         }
+        try:
+            from .watch_store import watch_store
+
+            wcfg = watch_store.load_config()
+            allowed.add(resolve_chat_id(wcfg.telegram_chat_id))
+        except Exception:  # noqa: BLE001
+            pass
         allowed = {c for c in allowed if c}
         if not allowed:
             return True

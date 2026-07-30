@@ -18,6 +18,13 @@ from .watch_store import watch_store
 
 # First buy and subsequent-alert mcap caps (USD).
 HVAT_MCAP = 20_000.0
+# Dedicated forum topic for deal #2/#3 alerts (watch discovery may use another topic).
+HVAT_FOLLOWUP_TOPIC = "9245"
+
+
+def _followup_topic(fcfg: FollowupConfig) -> str:
+    """Prefer saved follow-up topic; never steal watch discovery topic."""
+    return (fcfg.telegram_topic_id or HVAT_FOLLOWUP_TOPIC).strip() or HVAT_FOLLOWUP_TOPIC
 
 
 def apply_hvat_profile(*, enable: bool = True) -> dict[str, Any]:
@@ -45,15 +52,23 @@ def apply_hvat_profile(*, enable: bool = True) -> dict[str, Any]:
 
     fcfg = followup_store.load_config()
     alert_mcap = float(wallet.get("mcap_threshold") or HVAT_MCAP)
+    tg_chat = (fcfg.telegram_chat_id or wcfg.telegram_chat_id or "").strip()
+    tg_topic = _followup_topic(fcfg)
     fcfg = FollowupConfig.model_validate(
         {
             **fcfg.model_dump(),
             "enabled": enable,
             "max_mcap_alert": alert_mcap,
-            "alert_on_deals": [2, 3],
+            "alert_on_deals": list(fcfg.alert_on_deals or [2, 3]) or [2, 3],
             "max_deals": 3,
             "buys_only": True,
             "ingest_from_watch": True,
+            "telegram_chat_id": tg_chat,
+            "telegram_topic_id": tg_topic,
+            "bot_commands_enabled": True,
+            "prune_enabled": True if fcfg.prune_enabled is None else fcfg.prune_enabled,
+            "prune_min_ath_mcap": float(fcfg.prune_min_ath_mcap or 50_000.0),
+            "prune_after_hours": float(fcfg.prune_after_hours or 48.0),
         }
     )
     followup_store.save_config(fcfg)
@@ -72,9 +87,11 @@ def save_hvat_filters(
     screen: WatchScreenFilters | dict[str, Any],
     wallet: WatchWalletFilters | dict[str, Any],
     max_tokens_per_cycle: int | None = None,
+    interval_sec: int | None = None,
     sync_followup_mcap: bool = True,
+    followup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Persist token/wallet filters used by Хвать (via watch config)."""
+    """Persist token/wallet filters + optional #2/#3 alert filters."""
     wcfg = watch_store.load_config()
     screen_model = (
         screen
@@ -93,17 +110,47 @@ def save_hvat_filters(
     }
     if max_tokens_per_cycle is not None:
         payload["max_tokens_per_cycle"] = int(max_tokens_per_cycle)
+    if interval_sec is not None:
+        payload["interval_sec"] = int(interval_sec)
     saved = watch_store.save_config(WatchConfig.model_validate(payload))
     watch_runner.notify_config_changed()
 
     fcfg = followup_store.load_config()
-    if sync_followup_mcap and wallet_model.mcap_threshold is not None:
-        fcfg = FollowupConfig.model_validate(
-            {
-                **fcfg.model_dump(),
-                "max_mcap_alert": float(wallet_model.mcap_threshold),
-            }
-        )
+    updates: dict[str, Any] = {}
+    if followup:
+        if "max_mcap_alert" in followup and followup["max_mcap_alert"] is not None:
+            updates["max_mcap_alert"] = float(followup["max_mcap_alert"])
+        if "min_mcap_alert" in followup:
+            raw = followup["min_mcap_alert"]
+            updates["min_mcap_alert"] = float(raw) if raw is not None else None
+        if "min_bought_usd" in followup:
+            raw = followup["min_bought_usd"]
+            updates["min_bought_usd"] = float(raw) if raw is not None else None
+        if "max_bought_usd" in followup:
+            raw = followup["max_bought_usd"]
+            updates["max_bought_usd"] = float(raw) if raw is not None else None
+        if "telegram_topic_id" in followup:
+            updates["telegram_topic_id"] = str(followup["telegram_topic_id"] or "").strip()
+        if "telegram_chat_id" in followup:
+            updates["telegram_chat_id"] = str(followup["telegram_chat_id"] or "").strip()
+        if "alert_on_deals" in followup and followup["alert_on_deals"] is not None:
+            deals = [int(x) for x in followup["alert_on_deals"]]
+            updates["alert_on_deals"] = deals or [2, 3]
+        if "prune_enabled" in followup and followup["prune_enabled"] is not None:
+            updates["prune_enabled"] = bool(followup["prune_enabled"])
+        if "prune_min_ath_mcap" in followup and followup["prune_min_ath_mcap"] is not None:
+            updates["prune_min_ath_mcap"] = float(followup["prune_min_ath_mcap"])
+        if "prune_after_hours" in followup and followup["prune_after_hours"] is not None:
+            updates["prune_after_hours"] = float(followup["prune_after_hours"])
+
+    if "max_mcap_alert" not in updates and sync_followup_mcap and wallet_model.mcap_threshold is not None:
+        updates["max_mcap_alert"] = float(wallet_model.mcap_threshold)
+
+    if "telegram_topic_id" not in updates and not (fcfg.telegram_topic_id or "").strip():
+        updates["telegram_topic_id"] = HVAT_FOLLOWUP_TOPIC
+
+    if updates:
+        fcfg = FollowupConfig.model_validate({**fcfg.model_dump(), **updates})
         followup_store.save_config(fcfg)
         followup_runner.notify_config_changed()
 
@@ -111,21 +158,33 @@ def save_hvat_filters(
 
 
 def hvat_status() -> dict[str, Any]:
+    from .token_index import token_index
+
     w = watch_runner.status()
     f = followup_runner.status()
     cfg = watch_store.load_config()
+    fcfg = followup_store.load_config()
     return {
         "mcap_cap": float(cfg.wallet.mcap_threshold or HVAT_MCAP),
         "watch": w,
         "followup": f,
+        "index": token_index.status(),
         "config": cfg,
+        "followup_config": fcfg,
         "profile": {
             "one_trade": True,
             "max_tokens_traded_7d": cfg.wallet.max_tokens_traded_7d,
             "min_tokens_traded_7d": cfg.wallet.min_tokens_traded_7d,
             "tokens_unique_period": cfg.wallet.tokens_unique_period,
             "first_buy_max_mcap": cfg.wallet.mcap_threshold,
-            "alert_deals": [2, 3],
-            "alert_max_mcap": followup_store.load_config().max_mcap_alert,
+            "alert_deals": list(fcfg.alert_on_deals or [2, 3]),
+            "alert_max_mcap": fcfg.max_mcap_alert,
+            "alert_min_mcap": fcfg.min_mcap_alert,
+            "alert_min_bought": fcfg.min_bought_usd,
+            "alert_max_bought": fcfg.max_bought_usd,
+            "telegram_topic_id": fcfg.telegram_topic_id or HVAT_FOLLOWUP_TOPIC,
+            "prune_enabled": fcfg.prune_enabled,
+            "prune_min_ath_mcap": fcfg.prune_min_ath_mcap,
+            "prune_after_hours": fcfg.prune_after_hours,
         },
     }

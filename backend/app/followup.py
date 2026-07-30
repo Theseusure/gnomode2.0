@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from .blockscout import iter_address_token_transfers
@@ -16,6 +17,7 @@ from .models import (
     FollowupConfig,
     FollowupStatus,
     JobLogEntry,
+    WalletAlertFilters,
 )
 from .pools import fetch_dexscreener_pairs
 from .raybot import RayBotClient, raybot_client, raybot_configured
@@ -88,6 +90,93 @@ def should_alert_deal(
     return True
 
 
+def prune_settings_for_wallet(
+    cfg: FollowupConfig,
+    wallet_filters: WalletAlertFilters | None = None,
+) -> tuple[bool, float, float]:
+    """Return (enabled, min_ath_mcap_usd, after_hours) for a wallet."""
+    enabled = bool(cfg.prune_enabled)
+    min_ath = float(cfg.prune_min_ath_mcap or 0)
+    hours = float(cfg.prune_after_hours or 48)
+    if wallet_filters and wallet_filters.custom:
+        if wallet_filters.prune_enabled is not None:
+            enabled = bool(wallet_filters.prune_enabled)
+        if wallet_filters.prune_min_ath_mcap is not None:
+            min_ath = float(wallet_filters.prune_min_ath_mcap)
+        if wallet_filters.prune_after_hours is not None:
+            hours = float(wallet_filters.prune_after_hours)
+    return enabled, min_ath, max(1.0, hours)
+
+
+@dataclass(frozen=True)
+class PeakMcapEstimate:
+    """Peak mcap for prune decisions.
+
+    ``reliable`` is True when we have index ATH and/or Gecko OHLCV (not spot-only).
+    Spot DexScreener alone can understate a dumped ATH — do not prune on that.
+    """
+
+    peak: float
+    reliable: bool
+
+
+async def estimate_token_peak_mcap(
+    token: str,
+    *,
+    min_needed: float = 0.0,
+) -> PeakMcapEstimate | None:
+    """Best-effort peak mcap: index ATH → DexScreener spot → Gecko OHLCV.
+
+    Short-circuits once ``peak >= min_needed`` (skips remaining network calls).
+    """
+    key = (token or "").strip().lower()
+    if not key.startswith("0x"):
+        return None
+    peak = 0.0
+    reliable = False
+
+    try:
+        from .token_index import token_index
+
+        peaks = token_index.mcap_peaks([key])
+        hit = peaks.get(key)
+        if hit and hit[0] > 0:
+            peak = max(peak, float(hit[0]))
+            # Index mixes ath + live market_cap — enough to *pass*, not to prune.
+            if min_needed > 0 and peak >= min_needed:
+                return PeakMcapEstimate(peak=peak, reliable=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        mcap, _ = await estimate_token_quote(key)
+        if mcap and mcap > 0:
+            peak = max(peak, float(mcap))
+            # Spot alone is enough to *pass* the gate.
+            if min_needed > 0 and peak >= min_needed:
+                return PeakMcapEstimate(peak=peak, reliable=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from .ath_gecko import fetch_token_ath_mcap
+
+        res = await fetch_token_ath_mcap(key)
+        if res.ath_mcap and res.ath_mcap > 0:
+            peak = max(peak, float(res.ath_mcap))
+            reliable = True
+            if min_needed > 0 and peak >= min_needed:
+                return PeakMcapEstimate(peak=peak, reliable=True)
+        elif res.error:
+            logger.debug("peak mcap gecko %s: %s", key[:10], res.error)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("peak mcap gecko %s: %s", key[:10], exc)
+
+    if peak <= 0:
+        return None
+    return PeakMcapEstimate(peak=peak, reliable=reliable)
+
+
 def alert_kwargs_from_config(cfg: FollowupConfig) -> dict:
     return {
         "max_mcap_alert": cfg.max_mcap_alert,
@@ -95,6 +184,26 @@ def alert_kwargs_from_config(cfg: FollowupConfig) -> dict:
         "min_mcap_alert": cfg.min_mcap_alert,
         "min_bought_usd": cfg.min_bought_usd,
         "max_bought_usd": cfg.max_bought_usd,
+    }
+
+
+def alert_kwargs_for_wallet(
+    cfg: FollowupConfig,
+    wallet_filters: WalletAlertFilters | None = None,
+) -> dict:
+    """Merge global FollowupConfig with optional per-wallet overrides."""
+    base = alert_kwargs_from_config(cfg)
+    if not wallet_filters or not wallet_filters.custom:
+        return base
+    max_mcap = wallet_filters.max_mcap_alert
+    if max_mcap is None:
+        max_mcap = base["max_mcap_alert"]
+    return {
+        "max_mcap_alert": float(max_mcap),
+        "alert_on_deals": base["alert_on_deals"],
+        "min_mcap_alert": wallet_filters.min_mcap_alert,
+        "min_bought_usd": wallet_filters.min_bought_usd,
+        "max_bought_usd": wallet_filters.max_bought_usd,
     }
 
 
@@ -380,12 +489,16 @@ class FollowupRunner:
         chat = resolve_chat_id(cfg.telegram_chat_id)
         topic_id = resolve_topic_id(cfg.telegram_topic_id)
         if telegram_configured(chat):
+            filters_map = self._store.get_alert_filters_map(
+                sorted({d.wallet for d in inserted})
+            )
             for deal in inserted:
+                gate = alert_kwargs_for_wallet(cfg, filters_map.get(deal.wallet))
                 if not should_alert_deal(
                     deal.deal_index,
                     deal.mcap_at_buy,
                     bought_usd=deal.bought_usd,
-                    **alert_kwargs_from_config(cfg),
+                    **gate,
                 ):
                     continue
                 if not self._store.mark_notified(deal.wallet, deal.token):
@@ -410,6 +523,13 @@ class FollowupRunner:
         return len(inserted)
 
     async def _cycle_body(self, cfg: FollowupConfig) -> None:
+        pruned = await self._prune_stale_wallets(cfg)
+        if pruned:
+            self._append_log(
+                "prune",
+                f"Удалено {pruned} кош. (токен #1/#2/#3 не дошёл до ATH за срок)",
+            )
+
         wallets = self._store.list_watching()
         self._last_checked = len(wallets)
         self._last_new_deals = 0
@@ -423,22 +543,56 @@ class FollowupRunner:
         chat = resolve_chat_id(cfg.telegram_chat_id)
         topic_id = resolve_topic_id(cfg.telegram_topic_id)
         tg_ok = telegram_configured(chat)
-        gate = alert_kwargs_from_config(cfg)
+        filters_map = self._store.get_alert_filters_map(wallets)
 
         self._last_message = f"Проверка {len(wallets)} кош…"
         self._append_log("scan", self._last_message, percent=5)
 
-        for i, wallet in enumerate(wallets):
+        from .chain import RpcClient
+
+        rpc = RpcClient()
+        sem = asyncio.Semaphore(max(1, int(cfg.scan_concurrency or 6)))
+        done_count = 0
+        skipped_alerts = 0
+        progress_lock = asyncio.Lock()
+
+        async def _scan_one(wallet: str) -> tuple[str, list]:
+            nonlocal done_count
+            async with sem:
+                if self._stop_requested:
+                    return wallet, []
+                try:
+                    deals = await self._scan_wallet(wallet, cfg, rpc=rpc)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Follow-up scan %s: %s", wallet[:10], exc)
+                    deals = []
+            async with progress_lock:
+                done_count += 1
+                if done_count % 5 == 0 or done_count == len(wallets):
+                    pct = 5 + int(90 * done_count / max(len(wallets), 1))
+                    self._last_message = (
+                        f"Проверено {done_count}/{len(wallets)}, "
+                        f"новых сделок {self._last_new_deals}, "
+                        f"алертов {self._last_alerts_sent}"
+                    )
+                    self._append_log("scan", self._last_message, percent=pct)
+            return wallet, deals
+
+        results = await asyncio.gather(
+            *[_scan_one(w) for w in wallets],
+            return_exceptions=True,
+        )
+
+        for item in results:
             if self._stop_requested:
                 self._last_message = "Остановлено"
                 self._append_log("stop", self._last_message)
                 break
-            try:
-                new_deals = await self._scan_wallet(wallet, cfg)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Follow-up scan %s: %s", wallet[:10], exc)
+            if isinstance(item, BaseException):
+                logger.warning("Follow-up gather: %s", item)
                 continue
-
+            wallet, new_deals = item
+            gate = alert_kwargs_for_wallet(cfg, filters_map.get(wallet))
             for deal in new_deals:
                 self._last_new_deals += 1
                 if not should_alert_deal(
@@ -447,11 +601,7 @@ class FollowupRunner:
                     bought_usd=deal.bought_usd,
                     **gate,
                 ):
-                    self._append_log(
-                        "skip",
-                        f"{wallet[:10]}… deal #{deal.deal_index} "
-                        f"mcap={deal.mcap_at_buy} — без алерта",
-                    )
+                    skipped_alerts += 1
                     continue
                 if not tg_ok:
                     self._last_error = "Telegram не настроен"
@@ -472,32 +622,195 @@ class FollowupRunner:
                     self._last_alerts_sent += 1
                     self._append_log(
                         "telegram",
-                        f"Алерт deal #{deal.deal_index} · {deal.token_symbol or deal.token[:10]}",
+                        f"Алерт deal #{deal.deal_index} · {wallet[:10]}…",
                     )
                 except Exception as exc:  # noqa: BLE001
+                    logger.warning("Follow-up alert failed: %s", exc)
                     self._last_error = str(exc)
-                    self._append_log("error", f"Telegram: {exc}")
 
-            pct = 5 + 90 * (i + 1) / max(len(wallets), 1)
-            self._last_message = (
-                f"Проверено {i + 1}/{len(wallets)}, "
-                f"новых сделок {self._last_new_deals}, алертов {self._last_alerts_sent}"
+        if skipped_alerts:
+            self._append_log(
+                "skip",
+                f"Без алерта: {skipped_alerts} сделок (фильтры mcap/суммы)",
             )
-            if (i + 1) % 5 == 0 or i + 1 == len(wallets):
-                self._append_log("scan", self._last_message, percent=pct)
 
-        self._last_message = (
-            f"Готово — {self._last_checked} кош., "
-            f"{self._last_new_deals} сделок, {self._last_alerts_sent} алертов"
-        )
-        self._append_log("done", self._last_message, percent=100)
+        if not self._stop_requested:
+            self._last_message = (
+                f"Готово — {len(wallets)} кош., "
+                f"{self._last_new_deals} сделок, "
+                f"{self._last_alerts_sent} алертов"
+            )
+            self._append_log("done", self._last_message, percent=100)
 
-    async def _scan_wallet(self, wallet: str, cfg: FollowupConfig) -> list:
+    async def _prune_stale_wallets(self, cfg: FollowupConfig) -> int:
+        """Remove wallets when discovery/#2/#3 tokens never hit ATH in time.
+
+        - Deal #1: only if no follow-up deals exist yet (no deal_index >= 2).
+        - Deals #2/#3: after created_at + window (watching or done).
+        Passed ATH is persisted (ath_passed) so we do not re-hit Gecko every cycle.
+        """
+        rows = self._store.list_for_ath_prune()
+        if not rows:
+            return 0
+        now = time.time()
+        # (wallet, token, min_ath, reason)
+        candidates: list[tuple[str, str, float, str]] = []
+        passed_marks: list[tuple[str, str]] = []
+
+        for row in rows:
+            enabled, min_ath, hours = prune_settings_for_wallet(
+                cfg, row.get("alert_filters")
+            )
+            if not enabled or min_ath <= 0:
+                continue
+            addr = row["address"]
+            deals = list(row.get("deals") or [])
+            window = hours * 3600.0
+            max_idx = max((int(d.get("deal_index") or 0) for d in deals), default=0)
+            has_followup = max_idx >= 2
+
+            # Discovery prune: only before any follow-up deal exists.
+            if not has_followup:
+                discovered = float(row.get("discovered_at") or 0)
+                if discovered > 0 and (now - discovered) >= window:
+                    token = (row.get("first_token") or "").lower()
+                    if not token:
+                        for d in deals:
+                            if int(d.get("deal_index") or 0) == 1 and d.get("token"):
+                                token = str(d["token"]).lower()
+                                break
+                    if not token:
+                        token = self._store.first_token_for_wallet(addr)
+                    if token:
+                        candidates.append((addr, token, min_ath, "deal#1"))
+
+            # Follow-up #2/#3 — skip already ATH-passed deals.
+            for d in deals:
+                idx = int(d.get("deal_index") or 0)
+                if idx not in (2, 3):
+                    continue
+                if d.get("ath_passed"):
+                    continue
+                created = float(d.get("created_at") or 0)
+                if created <= 0 or (now - created) < window:
+                    continue
+                token = str(d.get("token") or "").lower()
+                if not token:
+                    continue
+                candidates.append((addr, token, min_ath, f"deal#{idx}"))
+
+        if not candidates:
+            return 0
+
+        self._last_message = f"Проверка ATH prune: {len(candidates)} проверок…"
+        self._append_log("prune", self._last_message, percent=2)
+
+        unique_tokens = sorted({t for _a, t, _m, _r in candidates})
+        token_min: dict[str, float] = {}
+        for _a, tok, min_ath, _r in candidates:
+            token_min[tok] = max(token_min.get(tok, 0.0), min_ath)
+
+        # Warm index peaks in one shot, then network only for misses / below threshold.
+        index_peaks: dict[str, float] = {}
+        try:
+            from .token_index import token_index
+
+            for tok, (peak, _sym) in token_index.mcap_peaks(unique_tokens).items():
+                if peak > 0:
+                    index_peaks[tok] = float(peak)
+        except Exception:  # noqa: BLE001
+            pass
+
+        sem = asyncio.Semaphore(4)
+        peaks: dict[str, PeakMcapEstimate | None] = {}
+
+        async def _fetch(tok: str) -> None:
+            needed = token_min.get(tok, 0.0)
+            idx_peak = index_peaks.get(tok, 0.0)
+            if needed > 0 and idx_peak >= needed:
+                peaks[tok] = PeakMcapEstimate(peak=idx_peak, reliable=True)
+                return
+            async with sem:
+                try:
+                    peaks[tok] = await estimate_token_peak_mcap(tok, min_needed=needed)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("prune peak %s: %s", tok[:10], exc)
+                    peaks[tok] = None
+
+        await asyncio.gather(*[_fetch(t) for t in unique_tokens])
+
+        # wallet → ordered list of failing reasons
+        fails: dict[str, list[tuple[str, float, str, float]]] = {}
+        for addr, token, min_ath, reason in candidates:
+            est = peaks.get(token)
+            if est is None:
+                continue
+            if est.peak >= min_ath:
+                if reason.startswith("deal#") and reason != "deal#1":
+                    passed_marks.append((addr, token))
+                continue
+            if not est.reliable:
+                continue
+            fails.setdefault(addr, []).append((token, min_ath, reason, est.peak))
+
+        if passed_marks:
+            self._store.mark_deals_ath_passed(passed_marks)
+
+        removed = 0
+        for addr, reasons in fails.items():
+            _block, deal_count, status = self._store.get_wallet_scan_meta(addr)
+            if status not in ("watching", "done"):
+                continue
+            for token, min_ath, reason, peak in reasons:
+                if reason == "deal#1" and deal_count > 1:
+                    continue
+                if self._store.delete_wallet(addr):
+                    removed += 1
+                    self._append_log(
+                        "prune",
+                        f"Удалён {addr[:10]}… ({reason}) — {token[:10]}… "
+                        f"peak=${peak:.0f} < ${min_ath:.0f}",
+                    )
+                break
+        return removed
+
+    async def _scan_wallet(
+        self,
+        wallet: str,
+        cfg: FollowupConfig,
+        *,
+        rpc: Any | None = None,
+    ) -> list:
+        last_seen, deal_count, status = self._store.get_wallet_scan_meta(wallet)
+        if status != "watching" or deal_count >= cfg.max_deals:
+            return []
+
         known = self._store.known_tokens(wallet)
-        # Collect first matching inbound transfer per unknown token.
-        # API is newest-first: keep overwriting so last seen (older) wins in scanned pages.
-        candidates: dict[str, tuple[str, str, dict[str, Any]]] = {}
-        async for item in iter_address_token_transfers(wallet, max_pages=6):
+        # Newest-first pages: overwrite so the oldest post-watermark buy per token wins.
+        candidates: dict[str, tuple[str, str, dict[str, Any], int]] = {}
+        max_block_seen = last_seen
+        pages = max(1, int(cfg.scan_max_pages or 3))
+        # Existing wallets after upgrade: peek tip once, set watermark, don't invent
+        # deal #2/#3 from old transfer history.
+        bootstrap = last_seen <= 0 and deal_count >= 1
+        if bootstrap:
+            pages = 1
+        elif last_seen <= 0:
+            pages = max(pages, 6)
+
+        async for item in iter_address_token_transfers(wallet, max_pages=pages):
+            block = _transfer_block(item)
+            if block > max_block_seen:
+                max_block_seen = block
+            if bootstrap:
+                continue
+            # Only transfers after discovery watermark (deal #2/#3 going forward).
+            if last_seen > 0:
+                if block <= 0:
+                    # Missing block metadata after watermark — skip (don't invent deals).
+                    continue
+                if block <= last_seen:
+                    break
             token, sym = _token_meta(item)
             if not token or token in QUOTE_TOKENS or token in known:
                 continue
@@ -509,16 +822,41 @@ class FollowupRunner:
             ):
                 continue
             tx = str(item.get("transaction_hash") or item.get("tx_hash") or "")
-            candidates[token] = (sym, tx, item)
+            candidates[token] = (sym, tx, item, block)
 
+        if max_block_seen > last_seen:
+            self._store.advance_last_seen_block(wallet, max_block_seen)
+        elif bootstrap:
+            # No block numbers from API — still mark warm so we don't re-bootstrap.
+            self._store.advance_last_seen_block(wallet, 1)
+
+        if not candidates:
+            return []
+
+        ordered = sorted(candidates.items(), key=lambda kv: kv[1][3] or 0)
+        remaining = cfg.max_deals - deal_count
         out = []
-        for token, (sym, tx, item) in candidates.items():
-            if self._stop_requested:
+        for token, (sym, tx, item, _block) in ordered:
+            if self._stop_requested or remaining <= 0:
                 break
             if token in self._store.known_tokens(wallet):
                 continue
-            mcap, price = await estimate_token_quote(token)
-            bought_usd = estimate_bought_usd(item, price)
+            mcap = None
+            bought_usd = None
+            if tx:
+                try:
+                    from .replay import estimate_entry_at_tx
+
+                    entry = await estimate_entry_at_tx(token, tx, rpc=rpc)
+                    mcap = entry.mcap
+                    bought_usd = entry.bought_usd
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("mcap_at_tx failed: %s", exc)
+            if mcap is None:
+                mcap, price = await estimate_token_quote(token)
+                if bought_usd is None:
+                    bought_usd = estimate_bought_usd(item, price)
+            # Skip second DexScreener when on-chain entry already gave mcap (+ optional USD).
             deal = self._store.record_deal(
                 wallet=wallet,
                 token=token,
@@ -530,7 +868,22 @@ class FollowupRunner:
             )
             if deal:
                 out.append(deal)
+                remaining -= 1
         return out
 
 
 followup_runner = FollowupRunner()
+
+
+def _transfer_block(item: dict[str, Any]) -> int:
+    raw = item.get("block_number")
+    if raw is None:
+        raw = item.get("blockNumber")
+    if raw is None:
+        return 0
+    try:
+        if isinstance(raw, str) and raw.startswith(("0x", "0X")):
+            return int(raw, 16)
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0

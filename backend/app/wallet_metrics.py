@@ -323,10 +323,20 @@ def _parse_ts(raw: object) -> datetime | None:
 
 
 async def _bs_get(url: str, params: dict[str, object]):
-    """Paced Blockscout GET with 429/5xx retries."""
+    """Paced Blockscout GET with 429/5xx retries; Pro 402 → public fallback."""
+    from .blockscout import (
+        blockscout_auth_params,
+        blockscout_headers,
+        disable_blockscout_pro,
+        _public_base,
+        _use_pro,
+    )
+
     global _bs_next_ok
     resp = None
     delay = 0.5
+    # Merge Pro apikey query when applicable.
+    req_params: dict[str, object] = {**blockscout_auth_params(), **params}
     for attempt in range(_MAX_METRIC_ATTEMPTS):
         async with _bs_sem:
             async with _bs_pace_lock:
@@ -337,13 +347,24 @@ async def _bs_get(url: str, params: dict[str, object]):
                 _bs_next_ok = time.time() + _BS_MIN_INTERVAL
             try:
                 resp = await http_client().get(
-                    url, params=params, headers=blockscout_headers()
+                    url, params=req_params, headers=blockscout_headers()
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Blockscout GET error attempt %s: %s", attempt + 1, exc)
                 await asyncio.sleep(delay)
                 delay = min(delay * 1.6, 12.0)
                 continue
+        if resp.status_code in (401, 402, 403) and _use_pro():
+            disable_blockscout_pro(f"HTTP {resp.status_code}")
+            # Rewrite Pro URL → public explorer and retry without burning attempts.
+            if "api.blockscout.com" in url:
+                # …/4663/api/v2/... → robinhoodchain.blockscout.com/api/v2/...
+                marker = "/api/v2"
+                idx = url.find(marker)
+                if idx >= 0:
+                    url = _public_base() + url[idx + len(marker) :]
+            req_params = dict(params)  # drop apikey
+            continue
         if resp.status_code in (429, 502, 503):
             ra = resp.headers.get("Retry-After")
             try:
