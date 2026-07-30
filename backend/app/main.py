@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -24,7 +25,9 @@ from .models import (
     ScreenRequest,
     WatchConfig,
     WatchStatus,
+    MigrationResponse,
 )
+from .migrations import migrated_tokens
 from .screen_jobs import screen_jobs
 from .token_index import token_index
 from .gnome_banter import gnome_banter
@@ -54,8 +57,9 @@ async def _start_background() -> None:
     from .gnome_lifecycle import install_death_hooks
 
     install_death_hooks()
-    # Background: cold-build the 24h token index, then keep it fresh.
+    # Background: cold-build the 24h token index, keep it fresh + ATH peaks (Gecko).
     asyncio.create_task(token_index.run_refresh_loop())
+    asyncio.create_task(token_index.run_hot_enrich_loop())
     asyncio.create_task(watch_runner.run_loop())
     asyncio.create_task(followup_runner.run_loop())
     from .followup_bot import followup_bot
@@ -91,6 +95,38 @@ async def health():
         "rpc_url": settings.rpc_url.split("/v2/")[0] if "/v2/" in settings.rpc_url else settings.rpc_url,
         "mcap_threshold": settings.mcap_threshold,
     }
+
+
+@app.get("/api/migrations", response_model=MigrationResponse)
+async def migrations(
+    launchpads: str = "pons,flap",
+    use_dexscreener: bool = True,
+    max_age_hours: float | None = None,
+    min_liquidity_usd: float | None = None,
+    max_liquidity_usd: float | None = None,
+    min_traders_24h: int | None = None,
+    max_traders_24h: int | None = None,
+):
+    started = time.monotonic()
+    selected = {item.strip().lower() for item in launchpads.split(",") if item.strip()}
+    selected &= {"pons", "flap"}
+    if not selected:
+        raise HTTPException(400, "Select Pons or Flap")
+    tokens, errors = await migrated_tokens(
+        selected,
+        use_dexscreener,
+        max_age_hours,
+        min_liquidity_usd,
+        max_liquidity_usd,
+        min_traders_24h,
+        max_traders_24h,
+    )
+    return MigrationResponse(
+        tokens=tokens,
+        errors=errors,
+        count=len(tokens),
+        duration_ms=round((time.monotonic() - started) * 1000),
+    )
 
 
 @app.post("/api/parse", response_model=JobResponse)

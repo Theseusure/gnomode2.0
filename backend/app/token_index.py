@@ -1,9 +1,10 @@
 """In-memory index of NEW tokens on Robinhood Chain.
 
-A "new token" is any token whose Uniswap V3/V4 pool was created within the last
-24h. Tokens are discovered from on-chain factory events (V3 ``PoolCreated`` +
-V4 ``Initialize``) — NOT from the Blockscout ``/tokens`` catalog, whose cursor
-pagination breaks after ~350 priced tokens.
+A "new token" is any token whose Uniswap V2/V3/V4 pool was created within the
+last 24h. Tokens are discovered from on-chain factory events (V2
+``PairCreated`` + V3 ``PoolCreated`` + V4 ``Initialize``) — NOT from the
+Blockscout ``/tokens`` catalog, whose cursor pagination breaks after ~350
+priced tokens.
 
 The index lives entirely in process memory and is kept fresh by a background
 refresh loop; the screener reads from it instead of hitting the chain per query.
@@ -22,7 +23,9 @@ import httpx
 from .chain import RpcClient, checksum
 from .constants import (
     BLOCKS_PER_SECOND,
+    PAIR_CREATED_TOPIC,
     QUOTE_TOKENS,
+    UNI_V2_FACTORY,
     UNI_V3_FACTORY,
     UNI_V4_POOL_MANAGER,
     V3_POOL_CREATED_TOPIC,
@@ -53,6 +56,13 @@ _REFRESH_SLICE = 30 * _ENRICH_BATCH
 # While a parse job is active, only enrich brand-new tokens (few) and skip the
 # stale-refresh so the parser gets the RPC/HTTP budget.
 _BUSY_SLICE = 0
+# Hot-set: frequent DexScreener ATH samples for liquid indexed tokens.
+_HOT_ENRICH_INTERVAL_S = 75
+_HOT_ENRICH_CAP = 350
+_HOT_MIN_LIQ_USD = 4_000.0
+# Gecko OHLCV peaks (rate-limited); run after DS enrich on new/hot tokens.
+_GECKO_BATCH_LIMIT = 40
+_GECKO_RETRY_S = 20 * 60.0
 
 
 def _topic_addr(topic: Any) -> str:
@@ -73,7 +83,7 @@ def _data_word_addr(data: Any, index: int) -> str:
 @dataclass
 class TokenEntry:
     address: str  # checksummed, for display
-    dex: str  # "uniswap_v3" | "uniswap_v4"
+    dex: str  # "uniswap_v2" | "uniswap_v3" | "uniswap_v4"
     quote_address: str
     created_block: int
     pool_address: str = ""
@@ -81,8 +91,10 @@ class TokenEntry:
     screened: ScreenedToken | None = None
     enriched_at: float = 0.0
     first_seen: float = field(default_factory=time.time)
-    # Peak DexScreener market_cap seen while this entry is alive in the index.
+    # Peak market_cap seen while this entry is alive in the index (DS + Gecko).
     ath_mcap: float = 0.0
+    # Last successful Gecko ATH probe (0 = never).
+    gecko_ath_at: float = 0.0
 
 
 class TokenIndex:
@@ -96,6 +108,9 @@ class TokenIndex:
         self.building: bool = False
         self.cold_started: bool = False
         self._refreshing: bool = False
+        self._hot_addresses: set[str] = set()
+        self._hot_enriching: bool = False
+        self.last_hot_enrich_ts: float = 0.0
 
     # ---------------------------------------------------------------- helpers
 
@@ -206,11 +221,17 @@ class TokenIndex:
         if on_progress:
             await on_progress(
                 "scan",
-                f"Scanning new V3/V4 pools (blocks {from_block}→{tip})…",
+                f"Scanning new V2/V3/V4 pools (blocks {from_block}→{tip})…",
                 0.05,
             )
 
-        v3_logs, v4_logs = await asyncio.gather(
+        v2_logs, v3_logs, v4_logs = await asyncio.gather(
+            rpc.get_logs_chunked(
+                address=UNI_V2_FACTORY,
+                topics=[PAIR_CREATED_TOPIC],
+                from_block=from_block,
+                to_block=tip,
+            ),
             rpc.get_logs_chunked(
                 address=UNI_V3_FACTORY,
                 topics=[V3_POOL_CREATED_TOPIC],
@@ -226,6 +247,25 @@ class TokenIndex:
         )
 
         new_keys: list[str] = []
+        for log in v2_logs:
+            topics = log["topics"]
+            if len(topics) < 3:
+                continue
+            token0 = _topic_addr(topics[1])
+            token1 = _topic_addr(topics[2])
+            # PairCreated data = (address pair, uint256)
+            pool = _data_word_addr(log["data"], 0)
+            key = self._consider(
+                token0,
+                token1,
+                dex="uniswap_v2",
+                pool=pool,
+                pool_id=None,
+                block=int(log["blockNumber"]),
+            )
+            if key:
+                new_keys.append(key)
+
         for log in v3_logs:
             topics = log["topics"]
             if len(topics) < 3:
@@ -247,11 +287,12 @@ class TokenIndex:
 
         for log in v4_logs:
             topics = log["topics"]
-            if len(topics) < 2:
+            # Initialize(bytes32 indexed id, address indexed currency0,
+            #            address indexed currency1, ...) — currencies in topics.
+            if len(topics) < 4:
                 continue
-            # V4 Initialize data = (currency0, currency1, fee, tickSpacing, hooks, ...)
-            currency0 = _data_word_addr(log["data"], 0)
-            currency1 = _data_word_addr(log["data"], 1)
+            currency0 = _topic_addr(topics[2])
+            currency1 = _topic_addr(topics[3])
             pool_id = topics[1]
             pool_id_hex = (
                 pool_id.hex() if isinstance(pool_id, (bytes, bytearray)) else str(pool_id)
@@ -272,9 +313,10 @@ class TokenIndex:
         self.last_tip = tip
         self.last_scan_ts = time.time()
         logger.info(
-            "Token index scan %s→%s: V3=%d V4=%d logs, +%d new tokens (total %d)",
+            "Token index scan %s→%s: V2=%d V3=%d V4=%d logs, +%d new tokens (total %d)",
             from_block,
             tip,
+            len(v2_logs),
             len(v3_logs),
             len(v4_logs),
             len(new_keys),
@@ -459,7 +501,18 @@ class TokenIndex:
                 stale_limit: int | None = None
             else:
                 stale_limit = _REFRESH_SLICE
+            # Collect keys that still need a first Gecko peak (new / never probed).
+            gecko_candidates = [
+                k
+                for k, e in self._tokens.items()
+                if e.gecko_ath_at <= 0.0
+            ]
             await self.enrich_pending(stale_limit=stale_limit, on_progress=on_progress)
+            if gecko_candidates:
+                await self._apply_gecko_peaks(
+                    gecko_candidates,
+                    limit=_GECKO_BATCH_LIMIT if not cold else min(80, _GECKO_BATCH_LIMIT * 2),
+                )
             self.cold_started = True
             self.building = False
             self.last_refresh_ts = time.time()
@@ -488,6 +541,114 @@ class TokenIndex:
             except Exception:  # noqa: BLE001
                 logger.exception("Token index refresh failed")
 
+    def set_hot_addresses(self, addresses: list[str] | set[str]) -> None:
+        """Optional explicit hot-set (merged with liquid indexed tokens)."""
+        self._hot_addresses = {
+            a.strip().lower() for a in addresses if a and str(a).strip()
+        }
+
+    def _hot_candidates(self) -> list[str]:
+        """Liquid indexed tokens (+ optional explicit hot-set), capped for DS."""
+        out: list[str] = []
+        seen: set[str] = set()
+        for addr in self._hot_addresses:
+            if addr in seen:
+                continue
+            seen.add(addr)
+            out.append(addr)
+            if len(out) >= _HOT_ENRICH_CAP:
+                return out
+        liquid = [
+            e
+            for e in self._tokens.values()
+            if e.screened is not None
+            and e.screened.liquidity_usd >= _HOT_MIN_LIQ_USD
+        ]
+        liquid.sort(key=lambda e: e.screened.market_cap if e.screened else 0.0, reverse=True)
+        for e in liquid:
+            key = e.address.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+            if len(out) >= _HOT_ENRICH_CAP:
+                break
+        return out
+
+    async def _apply_gecko_peaks(
+        self, addresses: list[str], *, limit: int = _GECKO_BATCH_LIMIT
+    ) -> int:
+        """Bump ``ath_mcap`` from GeckoTerminal OHLCV for a subset of tokens."""
+        from .ath_gecko import fetch_token_ath_mcap
+
+        now = time.time()
+        ranked: list[tuple[float, str]] = []
+        for raw in addresses:
+            key = raw.strip().lower()
+            entry = self._tokens.get(key)
+            if entry is None:
+                continue
+            # Prefer never-probed, then oldest probe.
+            age = now - entry.gecko_ath_at if entry.gecko_ath_at > 0 else 1e12
+            if entry.gecko_ath_at > 0 and age < _GECKO_RETRY_S:
+                continue
+            ranked.append((-age, key))
+        ranked.sort()
+        keys = [k for _, k in ranked[: max(0, limit)]]
+        if not keys:
+            return 0
+
+        async def one(key: str) -> None:
+            entry = self._tokens.get(key)
+            if entry is None:
+                return
+            pool_hint = entry.pool_address or entry.pool_id
+            try:
+                result = await fetch_token_ath_mcap(
+                    entry.address,
+                    pool=pool_hint or None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Gecko ATH failed for %s: %s", key, exc)
+                return
+            entry.gecko_ath_at = time.time()
+            if result.ath_mcap <= 0:
+                return
+            peak = max(entry.ath_mcap, result.ath_mcap)
+            entry.ath_mcap = peak
+            if entry.screened is not None:
+                entry.screened = self._apply_ath(entry, entry.screened)
+
+        await asyncio.gather(*(one(k) for k in keys))
+        logger.info("Gecko ATH probed %d tokens", len(keys))
+        return len(keys)
+
+    async def refresh_hot(self) -> int:
+        """Force-enrich the hot-set for denser ATH sampling (DS + Gecko)."""
+        if self._hot_enriching or self._parse_active() or not self.cold_started:
+            return 0
+        addrs = self._hot_candidates()
+        if not addrs:
+            return 0
+        self._hot_enriching = True
+        try:
+            enriched = await self.force_enrich_addresses(addrs)
+            await self._apply_gecko_peaks(addrs, limit=_GECKO_BATCH_LIMIT)
+            self.last_hot_enrich_ts = time.time()
+            logger.info("Hot ATH enrich: %d/%d tokens", len(enriched), len(addrs))
+            return len(enriched)
+        finally:
+            self._hot_enriching = False
+
+    async def run_hot_enrich_loop(self) -> None:
+        """Background loop: denser DexScreener + Gecko samples for liquid tokens."""
+        while True:
+            await asyncio.sleep(_HOT_ENRICH_INTERVAL_S)
+            try:
+                await self.refresh_hot()
+            except Exception:  # noqa: BLE001
+                logger.exception("Hot token enrich failed")
+
     # ---------------------------------------------------------------- reads
 
     def get_tokens(self) -> list[ScreenedToken]:
@@ -508,6 +669,30 @@ class TokenIndex:
 
     def known_addresses(self) -> set[str]:
         return set(self._tokens.keys())
+
+    def mcap_peaks(
+        self, addresses: list[str] | None = None
+    ) -> dict[str, tuple[float, str]]:
+        """Return ``(ath_mcap, symbol)`` for indexed tokens."""
+        keys = (
+            {a.lower() for a in addresses}
+            if addresses is not None
+            else set(self._tokens.keys())
+        )
+        out: dict[str, tuple[float, str]] = {}
+        for key in keys:
+            entry = self._tokens.get(key)
+            if entry is None:
+                continue
+            row = entry.screened
+            if row is not None:
+                row = self._apply_ath(entry, row)
+                entry.screened = row
+                peak = max(entry.ath_mcap, row.ath_mcap, row.market_cap)
+                out[key] = (peak, row.symbol or "")
+            elif entry.ath_mcap > 0:
+                out[key] = (entry.ath_mcap, "")
+        return out
 
     def status(self) -> dict[str, Any]:
         enriched = sum(1 for e in self._tokens.values() if e.screened is not None)

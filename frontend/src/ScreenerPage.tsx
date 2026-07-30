@@ -13,6 +13,7 @@ type ScreenedToken = {
   price_usd: number
   liquidity_usd: number
   market_cap: number
+  ath_mcap?: number
   traders_24h: number
   buys_24h?: number
   sells_24h?: number
@@ -55,6 +56,7 @@ type TableSortKey =
   | 'symbol'
   | 'liquidity_usd'
   | 'market_cap'
+  | 'ath_mcap'
   | 'traders_24h'
   | 'pair_age_hours'
   | 'price_usd'
@@ -64,6 +66,7 @@ type Filters = {
   max_liq: string
   min_mcap: string
   max_mcap: string
+  min_ath_mcap: string
   min_traders: string
   max_traders: string
   min_pair_age_hours: string
@@ -79,6 +82,7 @@ const DEFAULT_FILTERS: Filters = {
   max_liq: '',
   min_mcap: '',
   max_mcap: '',
+  min_ath_mcap: '',
   min_traders: '',
   max_traders: '',
   min_pair_age_hours: '',
@@ -130,6 +134,7 @@ function exportCsv(rows: ScreenedToken[]) {
     'price_usd',
     'liquidity_usd',
     'market_cap',
+    'ath_mcap',
     'traders_24h',
     'pair_age_hours',
     'url',
@@ -147,6 +152,7 @@ function exportCsv(rows: ScreenedToken[]) {
         r.price_usd,
         r.liquidity_usd,
         r.market_cap,
+        r.ath_mcap ?? '',
         r.traders_24h,
         r.pair_age_hours ?? '',
         r.url,
@@ -308,6 +314,7 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
           max_liq: parseOpt(filters.max_liq),
           min_mcap: parseOpt(filters.min_mcap),
           max_mcap: parseOpt(filters.max_mcap),
+          min_ath_mcap: parseOpt(filters.min_ath_mcap),
           min_traders: parseOpt(filters.min_traders),
           max_traders: parseOpt(filters.max_traders),
           min_pair_age_hours: parseOpt(filters.min_pair_age_hours),
@@ -342,6 +349,11 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
     }
     const mul = sortAsc ? 1 : -1
     return [...list].sort((a, b) => {
+      if (sortKey === 'ath_mcap') {
+        const an = a.ath_mcap ?? 0
+        const bn = b.ath_mcap ?? 0
+        return (an - bn) * mul
+      }
       const av = a[sortKey]
       const bv = b[sortKey]
       if (typeof av === 'string' && typeof bv === 'string') {
@@ -494,6 +506,17 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
               value={filters.max_mcap}
               onChange={(e) => setFilter('max_mcap', e.target.value)}
               placeholder="любая"
+            />
+          </label>
+          <label className="field">
+            <span>Мин. ATH mcap ($)</span>
+            <input
+              type="number"
+              min={0}
+              value={filters.min_ath_mcap}
+              onChange={(e) => setFilter('min_ath_mcap', e.target.value)}
+              placeholder="выкл"
+              title="Только токены с peak ATH ≥ порога (GeckoTerminal OHLCV + индекс). Пусто = выкл."
             />
           </label>
           <label className="field">
@@ -698,7 +721,14 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
                   >
                     Mcap
                   </th>
-                    <th
+                  <th
+                    className={sortKey === 'ath_mcap' ? 'active' : undefined}
+                    data-dir={sortKey === 'ath_mcap' ? sortDir : undefined}
+                    onClick={() => toggleSort('ath_mcap')}
+                  >
+                    Peak
+                  </th>
+                  <th
                     className={sortKey === 'traders_24h' ? 'active' : undefined}
                     data-dir={sortKey === 'traders_24h' ? sortDir : undefined}
                     onClick={() => toggleSort('traders_24h')}
@@ -751,6 +781,7 @@ export default function ScreenerPage({ onUseInBuyers }: Props) {
                       <td>${fmtNum(r.price_usd, 6)}</td>
                       <td>${fmtNum(r.liquidity_usd, 0)}</td>
                       <td>${fmtNum(r.market_cap, 0)}</td>
+                      <td>${fmtNum(r.ath_mcap ?? 0, 0)}</td>
                       <td>{fmtNum(r.traders_24h, 0)}</td>
                       <td className="mono muted">
                         {fmtNum(r.buys_24h ?? 0, 0)}/{fmtNum(r.sells_24h ?? 0, 0)}

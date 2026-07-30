@@ -1,6 +1,6 @@
 """Robinhood token screener over the in-memory 24h token index.
 
-Discovery of new tokens (Uniswap V3/V4 pools created in the last 24h) lives in
+Discovery of new tokens (Uniswap V2/V3/V4 pools created in the last 24h) lives in
 ``token_index``; this module applies user filters/sorting and the honeypot gate
 to the cached, DexScreener-enriched rows.
 """
@@ -26,6 +26,8 @@ ProgressCb = Callable[[str, str, float], Awaitable[None]]
 TokensCb = Callable[[list[ScreenedToken]], Awaitable[None]]
 
 _DS_TIMEOUT = httpx.Timeout(12.0, connect=8.0)
+# RH meme mints are almost always 1e9; used when supply is unknown.
+_RH_DEFAULT_SUPPLY = 1_000_000_000.0
 
 
 def _f(v: Any) -> float:
@@ -33,6 +35,18 @@ def _f(v: Any) -> float:
         return float(v)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _dex_market_cap(pair: dict[str, Any], *, supply: float | None = None) -> float:
+    """Prefer ``priceUsd × supply`` — DS ``marketCap`` is often wrong on RH."""
+    price_usd = _f(pair.get("priceUsd"))
+    sup = float(supply) if supply and supply > 0 else _RH_DEFAULT_SUPPLY
+    if price_usd > 0:
+        return price_usd * sup
+    raw = pair.get("marketCap")
+    if raw is None:
+        raw = pair.get("fdv")
+    return _f(raw)
 
 
 def _in_range(value: float | None, lo: float | None, hi: float | None) -> bool:
@@ -125,10 +139,6 @@ def _pair_to_screened(
     sells = int(_f(txns.get("sells")))
     traders = buys + sells
 
-    mcap = pair.get("marketCap")
-    if mcap is None:
-        mcap = pair.get("fdv")
-
     return ScreenedToken(
         address=token_addr,
         symbol=symbol,
@@ -137,7 +147,7 @@ def _pair_to_screened(
         dex_id=str(pair.get("dexId") or ""),
         price_usd=_f(pair.get("priceUsd")),
         liquidity_usd=_f((pair.get("liquidity") or {}).get("usd")),
-        market_cap=_f(mcap),
+        market_cap=_dex_market_cap(pair),
         traders_24h=traders,
         buys_24h=buys,
         sells_24h=sells,
@@ -153,6 +163,11 @@ def _passes_primary(row: ScreenedToken, req: ScreenRequest) -> bool:
         return False
     if not _in_range(row.market_cap, req.min_mcap, req.max_mcap):
         return False
+    # Peak seen in the 24h index; None/0 on the request disables the gate.
+    min_ath = req.min_ath_mcap
+    if min_ath is not None and min_ath > 0:
+        if not _in_range(float(row.ath_mcap or 0.0), min_ath, None):
+            return False
     if not _in_range(float(row.traders_24h), req.min_traders, req.max_traders):
         return False
     if req.min_pair_age_hours is not None or req.max_pair_age_hours is not None:
