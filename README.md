@@ -1,48 +1,33 @@
-# Gnomode 2.x — сканер и follow-up кошельков на Robinhood Chain
+# Gnomode 2.x — Launch Radar и follow-up кошельков на Robinhood Chain
 
-Веб-приложение для команды, которая ищет **ранних покупателей** мемкоинов на **Robinhood Chain** (chain ID `4663`) и следит, берут ли они **следующие токены снова на низком mcap**.
+Веб-приложение для команды, которая обнаруживает новые и мигрировавшие токены на **Robinhood Chain** (chain ID `4663`), ищет их **ранних покупателей** и следит, берут ли эти кошельки **следующие токены снова на низком mcap**.
 
 Интерфейс на русском. Один процесс = API + UI (Docker или локально).
 
 **Полная инструкция для команды (настройка + использование):**  
-[docs/USER_GUIDE.md](docs/USER_GUIDE.md) · на GitHub: [открыть](https://github.com/Theseusure/gnomode2.0/blob/feature/followup-ray-filters/docs/USER_GUIDE.md)
+[docs/USER_GUIDE.md](docs/USER_GUIDE.md) · на GitHub: [открыть](https://github.com/Theseusure/gnomode2.0/blob/main/docs/USER_GUIDE.md)
 
 ---
 
-## Какую ссылку дать коллегам
+## Репозиторий
 
-| Версия | Репозиторий | Ссылка |
-|--------|-------------|--------|
-| **2.2+** (Follow-up + фильтры buy/transfer) | [Theseusure/gnomode2.0](https://github.com/Theseusure/gnomode2.0) | ветка `feature/followup-ray-filters` (поверх `feature/wallet-followup`) |
-| **2.2** (базовый Follow-up) | [Theseusure/gnomode2.0](https://github.com/Theseusure/gnomode2.0) | [tree/v2.2.0](https://github.com/Theseusure/gnomode2.0/tree/v2.2.0) · ветка `feature/wallet-followup` |
-| **2.2** (зеркало) | [bunt13/gnomode](https://github.com/bunt13/gnomode) | [tree/v2.2.0](https://github.com/bunt13/gnomode/tree/v2.2.0) · ветка `v2` |
-| **2.0** | [bunt13/gnomode](https://github.com/bunt13/gnomode) | [tree/v2.0.0](https://github.com/bunt13/gnomode/tree/v2.0.0) |
-
-Клон актуальной 2.2:
+Актуальная версия находится в ветке `main`:
 
 ```bash
-git clone --branch v2.2.0 https://github.com/Theseusure/gnomode2.0.git
+git clone https://github.com/Theseusure/gnomode2.0.git
 cd gnomode2.0
 ```
 
-Запасной клон с bunt13:
-
-```bash
-git clone --branch v2.2.0 https://github.com/bunt13/gnomode.git
-cd gnomode
-```
-
-> В `bunt13/gnomode` ветка `main` пока на **v1.x**. Для 2.x берите тег `v2.2.0` / ветку `v2`, не `main`.
-
 ---
 
-## Что умеет продукт (5 вкладок)
+## Что умеет продукт (6 вкладок)
 
-1. **Скринер** — живой индекс токенов за ~24ч, фильтры (liq / age / traders / mcap), honeypot-отсев.
+1. **Миграции** — кандидаты из DexScreener и подтверждённые миграции Pons/Flap с фильтрами возраста, ликвидности и активности.
 2. **Кошельки (Early buyers)** — по адресу токена: кто купил **до** порога mcap (по умолчанию **$15 000**).
-3. **Автопарс** — по расписанию: скринер → ATH-гейт → early buyers → **Telegram** (расписание и чат).
-4. **Follow-up** — сохраняет этих кошельков в таблицу и шлёт алерт, когда они берут **2-й или 3-й новый токен снова на низком mcap** (высокий mcap — без уведомления). **Свой Telegram-бот** с фильтрами и командами (RayBot не нужен).
-5. **Настройки** — фильтры **токена** и **первой сделки** кошелька для автопарса (и порог mcap early buyers).
+3. **Скринер** — живой индекс токенов за ~24ч, фильтры liq / age / traders / mcap / ATH и honeypot-отсев.
+4. **Автопарс** — по расписанию: скринер → ATH-гейт → early buyers → **Telegram**.
+5. **Follow-up** — сохраняет найденные кошельки и шлёт алерт, когда они берут **2-й или 3-й новый токен снова на низком mcap**. Высокий mcap сохраняется без уведомления.
+6. **Настройки** — фильтры **токена** и **первой сделки** кошелька для автопарса, включая ATH-гейт и порог mcap early buyers.
 
 ### Гид: как правильно искать (типичный день)
 
@@ -53,12 +38,13 @@ cd gnomode
    - `mcap_threshold` / порог 1-й сделки (часто **15000**) — «ранний» вход;
    - опционально баланс ETH, hold time, токены за 7д — отсев шума;
    - нажмите **Сохранить** (автопарс подхватит эти фильтры, не перезаписывайте их слепо с вкладки Автопарс).
-2. **Скринер** (по желанию) — гляньте живой рынок, пресеты, перенос адресов в «Кошельки» для ручного разбора.
-3. **Кошельки** — ручной разбор одного токена: вставили адрес → early buyers → CSV / ссылки.
-4. **Автопарс** — включили расписание или «Запустить сейчас» → лог: screen → ATH → parse → Telegram. Это **источник** deal #1 для Follow-up.
-5. **Follow-up** — Ingest + фильтры алертов + Вкл → таблица наполняется; алерты на #2/#3 @ low mcap.
+2. **Миграции** (по желанию) — найдите подтверждённые Pons/Flap, выберите адреса и перенесите их в «Кошельки».
+3. **Скринер** (по желанию) — посмотрите живой рынок, Peak/ATH, пресеты и перенесите адреса в «Кошельки».
+4. **Кошельки** — ручной разбор одного или нескольких токенов: адреса → early buyers → CSV / ссылки.
+5. **Автопарс** — включите расписание или «Запустить сейчас» → лог: screen → ATH → parse → Telegram. Это **источник** deal #1 для Follow-up.
+6. **Follow-up** — Ingest + фильтры алертов + Вкл → таблица наполняется; алерты приходят на #2/#3 @ low mcap.
 
-Без шага 4 (успешный автопарс + Telegram) Follow-up останется пустым — так задумано.
+Без шага 5 (успешный автопарс + Telegram) Follow-up останется пустым — так задумано.
 
 ### Идея Follow-up одной фразой
 
@@ -75,8 +61,8 @@ cd gnomode
 ### 1. Клон и `.env`
 
 ```bash
-git clone --branch v2.0.0 https://github.com/bunt13/gnomode.git
-cd gnomode
+git clone https://github.com/Theseusure/gnomode2.0.git
+cd gnomode2.0
 cp .env.example .env
 # Linux/macOS:
 chmod +x scripts/*.sh
@@ -168,14 +154,24 @@ ATH пишется **только пока процесс жив и обогащ
 ### Скринер
 
 - Индекс токенов за последние ~24ч (новые пулы + обогащение метрик).
+- Peak/ATH капитализация собирается из текущих срезов DexScreener и минутных OHLCV-свечей GeckoTerminal; горячий набор обновляется в фоне.
 - Фильтры локально по индексу (быстро после прогрева):
   - **liquidity** — `liquidity.usd`
   - **pair age** — возраст пары в часах
   - **traders** — `txns.h24.buys + sells` (**не** уникальные кошельки)
   - **mcap** — `marketCap`, иначе `fdv`
+  - **ATH mcap** — максимальная капитализация, замеченная индексом или восстановленная по OHLCV
 - Honeypot: GMGN token security (+ лёгкий fallback DexScreener).
 - Пресеты, CSV, перенос выбранных адресов во вкладку «Кошельки».
 - Состояние вкладок сохраняется при переключении.
+
+### Миграции Pons / Flap
+
+- Собирает миграции из источников Pons и Flap и использует DexScreener как дополнительный канал обнаружения кандидатов.
+- Кандидат из DexScreener попадает в результат только после подтверждения соответствующей миграции Pons/Flap.
+- Фильтры: launchpad, максимальный возраст, минимальная/максимальная ликвидность и число транзакций за 24 часа.
+- В таблице видны источники обнаружения и ссылка на подтверждение.
+- Выбранные адреса одним действием передаются во вкладку «Кошельки» для ручного early-buyers анализа.
 
 ### Early buyers
 
@@ -341,7 +337,7 @@ Follow-up — это «вторая линия» после автопарса: 
 |------|------------|
 | Backend | Python 3.12+, FastAPI, web3.py, httpx, Pydantic |
 | Frontend | Vite, React 19, TypeScript |
-| Данные | Robinhood RPC, DexScreener, Blockscout, GMGN |
+| Данные | Robinhood RPC, DexScreener, GeckoTerminal, Blockscout, GMGN, Pons, Flap |
 | Алерты | Telegram Bot API; опционально RayBot |
 | Хранение Follow-up | SQLite (WAL) |
 
@@ -438,6 +434,7 @@ PYTHONPATH=backend uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 
 
 ```text
 фон: scan новых пулов → enrich → индекс 24ч
+фон ATH: горячие DexScreener-срезы + GeckoTerminal OHLCV
 UI/API: фильтры → срез → honeypot (GMGN) → сортировка
 ```
 
@@ -482,7 +479,7 @@ UI/API: фильтры → срез → honeypot (GMGN) → сортировка
 
 Большинство мемкоинов на RH торгуются на **Uniswap V4** (id пула — `bytes32`).
 
-**Ограничение ATH:** пик = max сэмплов DexScreener, пока сервис работает. Исторический ATH за простой DexScreener не отдаёт.
+**Ограничение ATH:** пик восстанавливается по доступным минутным свечам GeckoTerminal и сэмплам DexScreener. Это максимально наблюдавшееся значение, а не гарантированно полный биржевой ATH: внешние API могут не вернуть старые свечи или временно ограничить запросы.
 
 ---
 
@@ -493,6 +490,7 @@ UI/API: фильтры → срез → honeypot (GMGN) → сортировка
 | Область | Примеры |
 |---------|---------|
 | Health / индекс | `GET /api/health`, `GET /api/index/status`, `POST /api/index/refresh` |
+| Миграции | `GET /api/migrations?launchpads=pons,flap&use_dexscreener=true` |
 | Early buyers | `POST /api/parse`, `GET /api/parse/{job_id}` |
 | Screener | `POST /api/screen`, `GET /api/screen/{job_id}` |
 | Автопарс | `GET/PUT /api/watch`, `…/status`, `…/run`, `…/stop`, `…/test-telegram`, `…/clear-seen` |
@@ -592,13 +590,15 @@ gnomode/
 │   ├── followup.py / followup_store.py / followup_bot.py
 │   ├── raybot.py                # legacy sync (optional)
 │   ├── telegram.py
-│   ├── token_index.py / screener.py / replay.py
+│   ├── token_index.py / screener.py / ath_gecko.py
+│   ├── migrations.py / replay.py
 │   ├── wallet_metrics.py / pools.py / blockscout.py / …
 │   └── data/                # runtime (gitignore)
 ├── backend/tests/
 ├── frontend/src/
 │   ├── App.tsx
-│   ├── ScreenerPage.tsx / WatchPage.tsx / FollowupPage.tsx
+│   ├── MigrationsPage.tsx / ScreenerPage.tsx / WatchPage.tsx
+│   ├── FollowupPage.tsx / SettingsPage.tsx
 │   └── …
 ├── scripts/                 # keep-awake, dev-api, dev-ui
 ├── .env.example
@@ -622,8 +622,7 @@ gnomode/
 
 ---
 
-## Репозитории
+## Репозиторий
 
-- Актуальный снимок **2.2**: [Theseusure/gnomode2.0 @ v2.2.0](https://github.com/Theseusure/gnomode2.0/tree/v2.2.0)
-- Зеркало / bunt13: [bunt13/gnomode @ v2.2.0](https://github.com/bunt13/gnomode/tree/v2.2.0)
-- Ранний снимок 2.0: [bunt13/gnomode @ v2.0.0](https://github.com/bunt13/gnomode/tree/v2.0.0)
+- Актуальная версия: [Theseusure/gnomode2.0 — main](https://github.com/Theseusure/gnomode2.0)
+- Предыдущие стабильные снимки доступны в [тегах репозитория](https://github.com/Theseusure/gnomode2.0/tags).
