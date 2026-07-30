@@ -28,6 +28,27 @@ class ParseRequest(BaseModel):
     max_tokens_traded_7d: float | None = None
 
 
+class MigratedToken(BaseModel):
+    launchpad: str
+    address: str
+    name: str | None = None
+    symbol: str | None = None
+    image_url: str | None = None
+    migrated_at: str | None = None
+    pool_address: str | None = None
+    source_url: str
+    verification: str
+    liquidity_usd: float = 0
+    traders_24h: int = 0
+
+
+class MigrationResponse(BaseModel):
+    tokens: list[MigratedToken] = Field(default_factory=list)
+    errors: dict[str, str] = Field(default_factory=dict)
+    count: int = 0
+    duration_ms: int = 0
+
+
 class BuyerRow(BaseModel):
     wallet: str
     token: str

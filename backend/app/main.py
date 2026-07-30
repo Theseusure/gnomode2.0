@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -21,7 +22,9 @@ from .models import (
     ScreenRequest,
     WatchConfig,
     WatchStatus,
+    MigrationResponse,
 )
+from .migrations import migrated_tokens
 from .screen_jobs import screen_jobs
 from .token_index import token_index
 from .gnome_banter import gnome_banter
@@ -82,6 +85,36 @@ async def health():
         "rpc_url": settings.rpc_url.split("/v2/")[0] if "/v2/" in settings.rpc_url else settings.rpc_url,
         "mcap_threshold": settings.mcap_threshold,
     }
+
+
+@app.get("/api/migrations", response_model=MigrationResponse)
+async def migrations(
+    launchpads: str = "pons,flap",
+    max_age_hours: float | None = None,
+    min_liquidity_usd: float | None = None,
+    max_liquidity_usd: float | None = None,
+    min_traders_24h: int | None = None,
+    max_traders_24h: int | None = None,
+):
+    started = time.monotonic()
+    selected = {item.strip().lower() for item in launchpads.split(",") if item.strip()}
+    selected &= {"pons", "flap"}
+    if not selected:
+        raise HTTPException(400, "Select Pons or Flap")
+    tokens, errors = await migrated_tokens(
+        selected,
+        max_age_hours,
+        min_liquidity_usd,
+        max_liquidity_usd,
+        min_traders_24h,
+        max_traders_24h,
+    )
+    return MigrationResponse(
+        tokens=tokens,
+        errors=errors,
+        count=len(tokens),
+        duration_ms=round((time.monotonic() - started) * 1000),
+    )
 
 
 @app.post("/api/parse", response_model=JobResponse)

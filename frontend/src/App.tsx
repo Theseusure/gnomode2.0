@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import ScreenerPage from './ScreenerPage'
 import WatchPage from './WatchPage'
+import MigrationsPage from './MigrationsPage'
 import { FilterPresets } from './FilterPresets'
 import { loadJson, saveJson } from './session'
 import { useVisitedGmgnWallets } from './useVisitedGmgnWallets'
@@ -83,7 +84,7 @@ type SortKey =
   | 'wallet_balance_eth'
   | 'hold_time_minutes'
   | 'tokens_traded_7d'
-type AppPage = 'buyers' | 'screener' | 'watch'
+type AppPage = 'buyers' | 'migrations' | 'screener' | 'watch'
 
 type WalletFilters = {
   min_wallet_balance_eth: string
@@ -806,6 +807,13 @@ export default function App() {
       <nav className="page-nav" aria-label="Главное меню">
         <button
           type="button"
+          className={page === 'migrations' ? 'nav-link active' : 'nav-link'}
+          onClick={() => setPage('migrations')}
+        >
+          Миграции
+        </button>
+        <button
+          type="button"
           className={page === 'buyers' ? 'nav-link active' : 'nav-link'}
           onClick={() => setPage('buyers')}
         >
@@ -833,6 +841,9 @@ export default function App() {
       </div>
       <div hidden={page !== 'screener'}>
         <ScreenerPage onUseInBuyers={useInBuyers} />
+      </div>
+      <div hidden={page !== 'migrations'}>
+        <MigrationsPage onParse={useInBuyers} />
       </div>
       <div hidden={page !== 'watch'}>
         <WatchPage />
