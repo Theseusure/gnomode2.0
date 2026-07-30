@@ -1,4 +1,4 @@
-from app.migrations import _flap, _pons
+from app.migrations import _dex_candidate, _flap, _merge_dex_candidates, _pons
 
 
 def test_pons_requires_confirmed_graduation():
@@ -19,6 +19,31 @@ def test_pons_requires_confirmed_graduation():
     assert token is not None
     assert token["launchpad"] == "pons"
     assert token["verification"] == "official_indexer"
+
+
+def test_dexscreener_candidate_requires_robinhood_chain():
+    row = {"chainId": "ethereum", "tokenAddress": "0x" + "1" * 40}
+    assert _dex_candidate(row, "profiles") is None
+    row["chainId"] = "robinhood"
+    assert _dex_candidate(row, "profiles")["feed"] == "profiles"
+
+
+def test_dexscreener_does_not_promote_unverified_token():
+    verified = [
+        {
+            "address": "0x" + "1" * 40,
+            "launchpad": "pons",
+            "discovery_sources": ["pons"],
+        }
+    ]
+    candidates = [
+        {"address": "0x" + "2" * 40, "feed": "profiles", "image_url": "bad"},
+        {"address": "0x" + "1" * 40, "feed": "boosts", "image_url": "good"},
+    ]
+    _merge_dex_candidates(verified, candidates)
+    assert len(verified) == 1
+    assert verified[0]["image_url"] == "good"
+    assert verified[0]["discovery_sources"] == ["pons", "dexscreener:boosts"]
 
 
 def test_flap_decodes_launched_to_dex_payload():

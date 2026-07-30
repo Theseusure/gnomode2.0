@@ -1,4 +1,4 @@
-"""Scheduled watch pipeline: catch-up → screen → parse → dedup → Telegram."""
+"""Hourly migrations → early buyers → wallet preset → Telegram."""
 
 from __future__ import annotations
 
@@ -13,12 +13,11 @@ from .models import (
     BuyerRow,
     JobLogEntry,
     ParseRequest,
-    ScreenRequest,
     WatchScreenFilters,
     WatchStatus,
 )
+from .migrations import migrated_tokens
 from .replay import parse_token
-from .screener import screen_tokens
 from .telegram import resolve_chat_id, resolve_topic_id, send_buyers, telegram_configured
 from .watch_store import WatchStore, catchup_lookback_hours, watch_store
 
@@ -51,7 +50,7 @@ class WatchRunner:
         self._force_run = False
         self._stop_requested = False
         self._running = False
-        self._needs_catchup = True
+        self._needs_catchup = False
         self._was_enabled = False
         self._is_catchup_run = False
         self._catchup_lookback_hours: float | None = None
@@ -130,10 +129,8 @@ class WatchRunner:
         )
 
     def notify_config_changed(self) -> None:
-        """Wake the loop so enabled/interval changes apply. Do not touch _was_enabled."""
+        """Wake the loop so enabled changes apply."""
         cfg = self._store.load_config()
-        if cfg.enabled and not self._was_enabled:
-            self._needs_catchup = True
         self._append_log("config", "Конфиг обновлён")
         self._wake.set()
         try:
@@ -190,7 +187,6 @@ class WatchRunner:
 
                 if not cfg.enabled and not force:
                     if self._was_enabled:
-                        self._needs_catchup = True
                         self._append_log("schedule", "Автопарс выключен")
                     self._was_enabled = False
                     self._next_run_ts = None
@@ -204,7 +200,6 @@ class WatchRunner:
                     continue
 
                 if cfg.enabled and not self._was_enabled:
-                    self._needs_catchup = True
                     self._append_log("schedule", "Автопарс включён")
                     try:
                         await asyncio.wait_for(announce_work_start(), timeout=20.0)
@@ -214,28 +209,10 @@ class WatchRunner:
                         self._append_log("error", f"«За работу!» не отправилось: {exc}")
                 self._was_enabled = cfg.enabled
 
-                # Skip catch-up after reload / short gaps — e.g. "0.3 ч" only finds
-                # brand-new pairs and ignores the user's normal max_pair_age (24h).
-                do_catchup = self._needs_catchup
-                if do_catchup:
-                    last_ok = self._store.load_last_success_ts()
-                    if last_ok is not None:
-                        gap_sec = max(0.0, time.time() - last_ok)
-                        if gap_sec < _MIN_CATCHUP_GAP_SEC:
-                            self._append_log(
-                                "schedule",
-                                f"Догон пропущен — пауза {gap_sec / 60:.0f} мин "
-                                f"(< {_MIN_CATCHUP_GAP_SEC / 60:.0f} мин), обычный цикл",
-                            )
-                            do_catchup = False
-                            self._needs_catchup = False
-                        else:
-                            self._append_log(
-                                "schedule",
-                                f"Догон за {catchup_lookback_hours(last_ok):.1f} ч",
-                            )
-
-                trigger = "catchup" if do_catchup else ("manual" if force else "schedule")
+                # The pipeline always uses the same one-hour migration window.
+                do_catchup = False
+                self._needs_catchup = False
+                trigger = "manual" if force else "schedule"
                 try:
                     await self.run_cycle(trigger=trigger, catchup=do_catchup)
                     if do_catchup and not self._stop_requested:
@@ -260,7 +237,9 @@ class WatchRunner:
                     self._sleep_interval_sec = None
                     continue
 
-                interval = max(60, int(cfg.interval_sec))
+                # The migration window and schedule intentionally match: every run
+                # processes the preceding hour, with wallet+token dedup for overlap.
+                interval = 3600
                 # Next run = end of last cycle + interval (stable schedule).
                 base = self._last_run_ts or time.time()
                 deadline = base + interval
@@ -299,7 +278,7 @@ class WatchRunner:
                         self._sleep_interval_sec = None
                         break
 
-                    new_interval = max(60, int(cfg.interval_sec))
+                    new_interval = 3600
                     if new_interval != self._sleep_interval_sec:
                         # Interval changed: recompute from last run, keep schedule honest.
                         base = self._last_run_ts or time.time()
@@ -402,82 +381,45 @@ class WatchRunner:
             self._append_log("stop", self._last_message)
             return False
 
-        screen = cfg.screen
-        if catchup:
-            lookback = self._catchup_lookback_hours or catchup_lookback_hours(
-                self._store.load_last_success_ts()
-            )
-            screen = apply_catchup_to_screen(screen, lookback)
-            self._last_message = (
-                f"Скрининг токенов за последние {lookback:.1f} ч (догон)…"
-            )
-        else:
-            self._last_message = "Скрининг токенов…"
-        self._append_log("screen", self._last_message, percent=5)
-
-        class _WatchStopped(Exception):
-            pass
-
-        async def on_progress(stage: str, message: str, percent: float) -> None:
-            if self._stop_requested:
-                raise _WatchStopped()
-            self._last_message = message
-            self._append_log(stage, message, percent=round(percent * 100, 1))
-
-        async def _stop_waiter() -> None:
-            while not self._stop_requested:
-                await asyncio.sleep(0.25)
-            raise _WatchStopped()
-
-        screen_req = ScreenRequest(**screen.model_dump())
-        screen_task = asyncio.create_task(
-            screen_tokens(screen_req, on_progress=on_progress)
-        )
-        stop_task = asyncio.create_task(_stop_waiter())
+        self._last_message = "Поиск подтверждённых миграций за последний час…"
+        self._append_log("migrations", self._last_message, percent=5)
         try:
-            done, pending = await asyncio.wait(
-                {screen_task, stop_task},
-                return_when=asyncio.FIRST_COMPLETED,
+            migrations, migration_errors = await migrated_tokens(
+                {"pons", "flap"},
+                use_dexscreener=True,
+                max_age_hours=1,
             )
-            for t in pending:
-                t.cancel()
-                try:
-                    await t
-                except (asyncio.CancelledError, _WatchStopped):
-                    pass
-            if stop_task in done:
-                # Propagate stop (or swallow if screen also finished).
-                try:
-                    await stop_task
-                except _WatchStopped:
-                    self._last_message = "Остановлено во время скрининга"
-                    self._append_log("stop", self._last_message)
-                    return False
-            screened = await screen_task
-        except _WatchStopped:
-            self._last_message = "Остановлено во время скрининга"
-            self._append_log("stop", self._last_message)
+        except Exception as exc:  # noqa: BLE001
+            self._last_error = f"Ошибка парсинга миграций: {exc}"
+            self._last_message = self._last_error
+            self._append_log("error", self._last_message)
             return False
         if self._stop_requested:
-            self._last_message = "Остановлено после скрининга"
+            self._last_message = "Остановлено после поиска миграций"
             self._append_log("stop", self._last_message)
             return False
-        self._last_tokens_screened = len(screened)
+        self._last_tokens_screened = len(migrations)
+        error_suffix = (
+            f" · ошибки: {', '.join(sorted(migration_errors))}"
+            if migration_errors
+            else ""
+        )
         self._append_log(
-            "screen",
-            f"Скринер: {len(screened)} ток. (лимит цикла {cfg.max_tokens_per_cycle})",
+            "migrations",
+            f"Миграции за 1 ч: {len(migrations)}{error_suffix}",
             percent=20,
         )
 
-        tokens = [t.address for t in screened[: cfg.max_tokens_per_cycle]]
+        # No token limit: every confirmed migration in the hour is parsed.
+        tokens = [row["address"] for row in migrations]
         if not tokens:
             self._last_tokens_parsed = 0
             self._last_buyers_found = 0
             self._last_buyers_new = 0
             self._last_buyers_sent = 0
             self._last_buyers_skipped = 0
-            self._last_message = "Нет токенов по фильтрам скринера"
-            self._append_log("screen", self._last_message, percent=100)
+            self._last_message = "За последний час подтверждённых миграций нет"
+            self._append_log("migrations", self._last_message, percent=100)
             return True
 
         threshold = (

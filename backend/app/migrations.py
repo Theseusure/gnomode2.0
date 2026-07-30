@@ -17,6 +17,12 @@ from .chain import http_client
 PONS_URL = "https://robinhood.ponslaunchpad.com/api/pons-launches/graduations"
 BLOCKSCOUT_LOGS = "https://robinhoodchain.blockscout.com/api"
 DEXSCREENER = "https://api.dexscreener.com/tokens/v1/robinhood"
+DEXSCREENER_DISCOVERY = (
+    ("profiles", "https://api.dexscreener.com/token-profiles/latest/v1"),
+    ("boosts", "https://api.dexscreener.com/token-boosts/latest/v1"),
+    ("takeovers", "https://api.dexscreener.com/community-takeovers/latest/v1"),
+    ("ads", "https://api.dexscreener.com/ads/latest/v1"),
+)
 FLAP_PORTAL = "0x26605f322f7fF986f381bB9A6e3f5DAb0bEaEb09"
 FLAP_LAUNCHED_TOPIC = "0x6e4f47630b8745b8cacbd44f42a8a33e7eea7cc08ef22fc7630f4f385784ff7d"
 
@@ -46,6 +52,7 @@ def _pons(row: dict[str, Any]) -> dict[str, Any] | None:
         "pool_address": row.get("pool"),
         "source_url": f"https://www.ponsfamily.com/launchpad/{token}",
         "verification": "official_indexer",
+        "discovery_sources": ["pons"],
     }
 
 
@@ -74,6 +81,19 @@ def _flap(row: dict[str, Any]) -> dict[str, Any] | None:
         "pool_address": pool,
         "source_url": f"https://robinhoodchain.blockscout.com/tx/{tx}",
         "verification": "onchain",
+        "discovery_sources": ["flap"],
+    }
+
+
+def _dex_candidate(row: dict[str, Any], feed: str) -> dict[str, Any] | None:
+    token = str(row.get("tokenAddress") or "")
+    if row.get("chainId") != "robinhood" or len(token) != 42:
+        return None
+    return {
+        "address": token,
+        "image_url": row.get("icon"),
+        "source_url": row.get("url"),
+        "feed": feed,
     }
 
 
@@ -114,6 +134,47 @@ async def _fetch_flap() -> list[dict[str, Any]]:
         if len(rows) < 1000:
             break
     return out
+
+
+async def _fetch_dex_candidates() -> list[dict[str, Any]]:
+    async def fetch(feed: str, url: str) -> list[dict[str, Any]]:
+        response = await http_client().get(url, timeout=15)
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list):
+            return []
+        return [
+            candidate
+            for row in rows
+            if isinstance(row, dict)
+            and (candidate := _dex_candidate(row, feed)) is not None
+        ]
+
+    settled = await asyncio.gather(
+        *(fetch(feed, url) for feed, url in DEXSCREENER_DISCOVERY),
+        return_exceptions=True,
+    )
+    candidates: list[dict[str, Any]] = []
+    for result in settled:
+        if not isinstance(result, BaseException):
+            candidates.extend(result)
+    return candidates
+
+
+def _merge_dex_candidates(
+    tokens: list[dict[str, Any]], candidates: list[dict[str, Any]]
+) -> None:
+    """Attach DexScreener discovery only to already confirmed migrations."""
+    verified = {row["address"].lower(): row for row in tokens}
+    for candidate in candidates:
+        token = verified.get(candidate["address"].lower())
+        if token is None:
+            continue
+        sources = token.setdefault("discovery_sources", [token["launchpad"]])
+        marker = f"dexscreener:{candidate['feed']}"
+        if marker not in sources:
+            sources.append(marker)
+        token["image_url"] = token.get("image_url") or candidate.get("image_url")
 
 
 async def _enrich(tokens: list[dict[str, Any]]) -> None:
@@ -167,6 +228,7 @@ async def _enrich(tokens: list[dict[str, Any]]) -> None:
 
 async def migrated_tokens(
     launchpads: set[str],
+    use_dexscreener: bool = True,
     max_age_hours: float | None = None,
     min_liquidity_usd: float | None = None,
     max_liquidity_usd: float | None = None,
@@ -178,12 +240,13 @@ async def migrated_tokens(
         tasks.append(("pons", _fetch_pons()))
     if "flap" in launchpads:
         tasks.append(("flap", _fetch_flap()))
-    settled = await asyncio.gather(
-        *(task for _, task in tasks), return_exceptions=True
-    )
+    source_tasks = [task for _, task in tasks]
+    if use_dexscreener:
+        source_tasks.append(_fetch_dex_candidates())
+    settled = await asyncio.gather(*source_tasks, return_exceptions=True)
     errors: dict[str, str] = {}
     tokens: list[dict[str, Any]] = []
-    for (name, _), result in zip(tasks, settled, strict=True):
+    for (name, _), result in zip(tasks, settled[: len(tasks)], strict=True):
         if isinstance(result, BaseException):
             errors[name] = str(result)
         else:
@@ -192,6 +255,12 @@ async def migrated_tokens(
         (row["launchpad"], row["address"].lower()): row for row in tokens
     }
     tokens = list(by_key.values())
+    if use_dexscreener:
+        dex_result = settled[-1]
+        if isinstance(dex_result, BaseException):
+            errors["dexscreener"] = str(dex_result)
+        else:
+            _merge_dex_candidates(tokens, dex_result)
     if max_age_hours is not None:
         cutoff = time.time() - max_age_hours * 3600
         tokens = [

@@ -9,6 +9,7 @@ type ScreenFiltersForm = {
   max_liq: string
   min_mcap: string
   max_mcap: string
+  min_ath_mcap: string
   min_traders: string
   max_traders: string
   min_pair_age_hours: string
@@ -42,6 +43,7 @@ type WatchConfig = {
     max_liq: number | null
     min_mcap: number | null
     max_mcap: number | null
+    min_ath_mcap?: number | null
     min_traders: number | null
     max_traders: number | null
     min_pair_age_hours: number | null
@@ -119,18 +121,12 @@ async function readApiError(res: Response, fallback: string) {
   return `${fallback} (${res.status})`
 }
 
-function fmtLookback(hours: number | null | undefined) {
-  if (hours == null || !Number.isFinite(hours)) return '—'
-  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))} мин`
-  if (Math.abs(hours - 24) < 0.05) return '24 ч'
-  return `${hours.toFixed(1)} ч`
-}
-
 const DEFAULT_SCREEN: ScreenFiltersForm = {
   min_liq: '',
   max_liq: '',
   min_mcap: '',
   max_mcap: '',
+  min_ath_mcap: '',
   min_traders: '',
   max_traders: '',
   min_pair_age_hours: '',
@@ -207,6 +203,7 @@ function configToForms(cfg: WatchConfig): {
       max_liq: numToStr(cfg.screen.max_liq),
       min_mcap: numToStr(cfg.screen.min_mcap),
       max_mcap: numToStr(cfg.screen.max_mcap),
+      min_ath_mcap: numToStr(cfg.screen.min_ath_mcap),
       min_traders: numToStr(cfg.screen.min_traders),
       max_traders: numToStr(cfg.screen.max_traders),
       min_pair_age_hours: numToStr(cfg.screen.min_pair_age_hours),
@@ -289,8 +286,8 @@ export default function WatchPage() {
   }, [])
 
   const buildConfig = useCallback((): WatchConfig => {
-    const mins = Math.max(1, Number(intervalMin) || 15)
-    const maxTok = Math.min(2000, Math.max(1, Number(maxTokens) || 20))
+    const mins = 60
+    const maxTok = 2000
     const maxResults = Math.min(2000, Math.max(1, Number(screen.max_results) || 500))
     return {
       enabled,
@@ -304,6 +301,7 @@ export default function WatchPage() {
         max_liq: parseOpt(screen.max_liq),
         min_mcap: parseOpt(screen.min_mcap),
         max_mcap: parseOpt(screen.max_mcap),
+        min_ath_mcap: parseOpt(screen.min_ath_mcap),
         min_traders: parseOpt(screen.min_traders),
         max_traders: parseOpt(screen.max_traders),
         min_pair_age_hours: parseOpt(screen.min_pair_age_hours),
@@ -450,15 +448,10 @@ export default function WatchPage() {
     }
   }, [buildConfig])
 
-  const setScreenField = <K extends keyof ScreenFiltersForm>(key: K, value: ScreenFiltersForm[K]) => {
-    setScreen((prev) => ({ ...prev, [key]: value }))
-  }
-
   const setWalletField = <K extends keyof WalletFiltersForm>(key: K, value: WalletFiltersForm[K]) => {
     setWallet((prev) => ({ ...prev, [key]: value }))
   }
 
-  const screenPreset = useMemo(() => screen, [screen])
   const walletPreset = useMemo(() => wallet, [wallet])
 
   if (loading) {
@@ -479,8 +472,8 @@ export default function WatchPage() {
         <p className="brand">gnomode</p>
         <h1>Автопарс и алерты в Telegram</h1>
         <p className="lede">
-          По расписанию скринит токены, парсит ранних покупателей по фильтрам кошельков и
-          отправляет новые пары кошелёк+токен в Telegram.
+          Раз в час берёт все подтверждённые миграции за предыдущий час, парсит ранних
+          покупателей по выбранному пресету и отправляет прошедшие кошельки в Telegram.
         </p>
       </header>
 
@@ -518,16 +511,6 @@ export default function WatchPage() {
             <strong>{status?.seen_count ?? 0}</strong>
           </div>
           <div>
-            <span className="muted">Догон</span>
-            <strong>
-              {status?.is_catchup_run
-                ? `сейчас · ${fmtLookback(status.catchup_lookback_hours)}`
-                : status?.needs_catchup
-                  ? `ожидает · ${fmtLookback(status.catchup_lookback_hours)}`
-                  : 'не нужен'}
-            </strong>
-          </div>
-          <div>
             <span className="muted">Гном в чате</span>
             <strong>
               {status?.gnome_banter_enabled === false
@@ -563,28 +546,8 @@ export default function WatchPage() {
                 checked={enabled}
                 onChange={(e) => setEnabled(e.target.checked)}
               />
-              Запускать по интервалу
+              Запускать раз в час
             </label>
-          </label>
-          <label className="field compact">
-            <span>Интервал (минуты)</span>
-            <input
-              type="number"
-              min={1}
-              max={1440}
-              value={intervalMin}
-              onChange={(e) => setIntervalMin(e.target.value)}
-            />
-          </label>
-          <label className="field compact">
-            <span>Макс. токенов / цикл</span>
-            <input
-              type="number"
-              min={1}
-              max={2000}
-              value={maxTokens}
-              onChange={(e) => setMaxTokens(e.target.value)}
-            />
           </label>
           <label className="field">
             <span>Telegram chat id</span>
@@ -673,81 +636,7 @@ export default function WatchPage() {
       </section>
 
       <section className="panel input-panel">
-        <h2 className="section-title">Фильтры токенов (скринер)</h2>
-        <FilterPresets
-          storageKey="gnomode.presets.watch.tokens"
-          current={screenPreset}
-          onApply={(v) => setScreen({ ...DEFAULT_SCREEN, ...v })}
-        />
-        <div className="filter-grid">
-          <label className="field">
-            <span>Мин. ликвидность ($)</span>
-            <input type="number" min={0} value={screen.min_liq} onChange={(e) => setScreenField('min_liq', e.target.value)} placeholder="любая" />
-          </label>
-          <label className="field">
-            <span>Макс. ликвидность ($)</span>
-            <input type="number" min={0} value={screen.max_liq} onChange={(e) => setScreenField('max_liq', e.target.value)} placeholder="любая" />
-          </label>
-          <label className="field">
-            <span>Мин. mcap ($)</span>
-            <input type="number" min={0} value={screen.min_mcap} onChange={(e) => setScreenField('min_mcap', e.target.value)} placeholder="любая" />
-          </label>
-          <label className="field">
-            <span>Макс. mcap ($)</span>
-            <input type="number" min={0} value={screen.max_mcap} onChange={(e) => setScreenField('max_mcap', e.target.value)} placeholder="любая" />
-          </label>
-          <label className="field">
-            <span>Мин. трейдеров (24ч)</span>
-            <input type="number" min={0} value={screen.min_traders} onChange={(e) => setScreenField('min_traders', e.target.value)} placeholder="любое" />
-          </label>
-          <label className="field">
-            <span>Макс. трейдеров (24ч)</span>
-            <input type="number" min={0} value={screen.max_traders} onChange={(e) => setScreenField('max_traders', e.target.value)} placeholder="любое" />
-          </label>
-          <label className="field">
-            <span>Мин. возраст пары (ч)</span>
-            <input type="number" min={0} value={screen.min_pair_age_hours} onChange={(e) => setScreenField('min_pair_age_hours', e.target.value)} placeholder="любой" />
-          </label>
-          <label className="field">
-            <span>Макс. возраст пары (ч)</span>
-            <input type="number" min={0} value={screen.max_pair_age_hours} onChange={(e) => setScreenField('max_pair_age_hours', e.target.value)} placeholder="любой" />
-          </label>
-          <label className="field">
-            <span>Сортировка</span>
-            <select value={screen.sort_by} onChange={(e) => setScreenField('sort_by', e.target.value as ScreenSortBy)}>
-              <option value="liquidity">Ликвидность</option>
-              <option value="market_cap">Капитализация</option>
-              <option value="traders">Трейдеры</option>
-              <option value="pair_age">Возраст пары</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Порядок</span>
-            <select value={screen.sort_order} onChange={(e) => setScreenField('sort_order', e.target.value as ScreenSortOrder)}>
-              <option value="desc">По убыванию</option>
-              <option value="asc">По возрастанию</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Макс. результатов</span>
-            <input type="number" min={1} max={2000} value={screen.max_results} onChange={(e) => setScreenField('max_results', e.target.value)} />
-          </label>
-          <label className="field check-field">
-            <span>Безопасность</span>
-            <label className="check-inline">
-              <input
-                type="checkbox"
-                checked={screen.exclude_honeypots}
-                onChange={(e) => setScreenField('exclude_honeypots', e.target.checked)}
-              />
-              Пропускать honeypot
-            </label>
-          </label>
-        </div>
-      </section>
-
-      <section className="panel input-panel">
-        <h2 className="section-title">Фильтры кошельков</h2>
+        <h2 className="section-title">Пресет фильтров кошельков</h2>
         <FilterPresets
           storageKey="gnomode.presets.watch.wallets"
           current={walletPreset}

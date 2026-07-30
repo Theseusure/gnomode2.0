@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react'
 type Token = {
   launchpad: string; address: string; name?: string | null; symbol?: string | null
   migrated_at?: string | null; source_url: string; verification: string
+  discovery_sources: string[]
   liquidity_usd: number; traders_24h: number
 }
 type Response = { tokens: Token[]; errors: Record<string, string>; count: number; duration_ms: number }
@@ -11,6 +12,7 @@ const short = (address: string) => `${address.slice(0, 8)}…${address.slice(-6)
 export default function MigrationsPage({ onParse }: { onParse: (addresses: string[]) => void }) {
   const [pons, setPons] = useState(true)
   const [flap, setFlap] = useState(true)
+  const [dexscreener, setDexscreener] = useState(true)
   const [age, setAge] = useState('1')
   const [minLiquidity, setMinLiquidity] = useState('')
   const [minTraders, setMinTraders] = useState('')
@@ -31,7 +33,7 @@ export default function MigrationsPage({ onParse }: { onParse: (addresses: strin
     if (!launchpads) return
     setBusy(true); setError(null)
     try {
-      const p = new URLSearchParams({ launchpads })
+      const p = new URLSearchParams({ launchpads, use_dexscreener: String(dexscreener) })
       if (age) p.set('max_age_hours', age)
       if (minLiquidity) p.set('min_liquidity_usd', minLiquidity)
       if (minTraders) p.set('min_traders_24h', minTraders)
@@ -49,12 +51,13 @@ export default function MigrationsPage({ onParse }: { onParse: (addresses: strin
     <header className="hero">
       <p className="brand">launch radar × gnomode</p>
       <h1>Миграции Pons и Flap</h1>
-      <p className="lede">Только graduation Pons и on-chain LaunchedToDEX Flap.</p>
+      <p className="lede">DexScreener обнаруживает кандидатов; в таблицу попадают только подтверждённые миграции Pons и Flap.</p>
     </header>
     <section className="panel input-panel">
       <div className="row">
         <label className="check-inline"><input type="checkbox" checked={pons} onChange={(e) => setPons(e.target.checked)} />Pons migrated</label>
         <label className="check-inline"><input type="checkbox" checked={flap} onChange={(e) => setFlap(e.target.checked)} />Flap migrated</label>
+        <label className="check-inline"><input type="checkbox" checked={dexscreener} onChange={(e) => setDexscreener(e.target.checked)} />DexScreener discovery</label>
         <label className="field compact"><span>Возраст, ч</span><input type="number" min={0} value={age} onChange={(e) => setAge(e.target.value)} /></label>
         <label className="field compact"><span>Мин. ликвидность, $</span><input type="number" min={0} value={minLiquidity} onChange={(e) => setMinLiquidity(e.target.value)} /></label>
         <label className="field compact"><span>Мин. трейдеров 24ч</span><input type="number" min={0} value={minTraders} onChange={(e) => setMinTraders(e.target.value)} /></label>
@@ -69,13 +72,14 @@ export default function MigrationsPage({ onParse }: { onParse: (addresses: strin
         <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Имя, тикер или адрес" />
         <button className="primary" disabled={!selected.size} onClick={() => onParse([...selected])}>В Early buyers ({selected.size})</button>
       </div>
-      <div className="table-scroll"><table><thead><tr><th /><th>Токен</th><th>Launchpad</th><th>Миграция</th><th>Ликвидность</th><th>Трейдеры</th><th>Проверка</th></tr></thead>
+      <div className="table-scroll"><table><thead><tr><th /><th>Токен</th><th>Launchpad</th><th>Миграция</th><th>Ликвидность</th><th>Трейдеры</th><th>Обнаружен</th><th>Проверка</th></tr></thead>
         <tbody>{visible.map((t) => <tr key={`${t.launchpad}:${t.address}`}>
           <td><input type="checkbox" checked={selected.has(t.address.toLowerCase())} onChange={() => toggle(t.address)} /></td>
           <td><a href={`https://gmgn.ai/robinhood/token/${t.address}`} target="_blank" rel="noreferrer"><strong>{t.symbol || t.name || short(t.address)}</strong></a><div className="mono muted">{short(t.address)}</div></td>
           <td><span className="badge">{t.launchpad.toUpperCase()}</span></td>
           <td>{t.migrated_at ? new Date(t.migrated_at).toLocaleString() : 'confirmed'}</td>
           <td>${t.liquidity_usd.toLocaleString()}</td><td>{t.traders_24h.toLocaleString()}</td>
+          <td>{t.discovery_sources.join(', ')}</td>
           <td><a href={t.source_url} target="_blank" rel="noreferrer">{t.verification} ↗</a></td>
         </tr>)}</tbody></table></div>
     </section>}

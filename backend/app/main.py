@@ -52,8 +52,9 @@ async def _start_background() -> None:
     from .gnome_lifecycle import install_death_hooks
 
     install_death_hooks()
-    # Background: cold-build the 24h token index, then keep it fresh.
+    # Background: cold-build the 24h token index, keep it fresh + ATH peaks (Gecko).
     asyncio.create_task(token_index.run_refresh_loop())
+    asyncio.create_task(token_index.run_hot_enrich_loop())
     asyncio.create_task(watch_runner.run_loop())
     asyncio.create_task(gnome_banter.run_loop())
 
@@ -90,6 +91,7 @@ async def health():
 @app.get("/api/migrations", response_model=MigrationResponse)
 async def migrations(
     launchpads: str = "pons,flap",
+    use_dexscreener: bool = True,
     max_age_hours: float | None = None,
     min_liquidity_usd: float | None = None,
     max_liquidity_usd: float | None = None,
@@ -103,6 +105,7 @@ async def migrations(
         raise HTTPException(400, "Select Pons or Flap")
     tokens, errors = await migrated_tokens(
         selected,
+        use_dexscreener,
         max_age_hours,
         min_liquidity_usd,
         max_liquidity_usd,

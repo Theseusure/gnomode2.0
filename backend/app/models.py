@@ -38,6 +38,7 @@ class MigratedToken(BaseModel):
     pool_address: str | None = None
     source_url: str
     verification: str
+    discovery_sources: list[str] = Field(default_factory=list)
     liquidity_usd: float = 0
     traders_24h: int = 0
 
@@ -133,6 +134,8 @@ class ScreenRequest(BaseModel):
     max_liq: float | None = None
     min_mcap: float | None = None
     max_mcap: float | None = None
+    # Peak/ATH mcap from the 24h index (Gecko OHLCV + DS samples). None/0 = off.
+    min_ath_mcap: float | None = None
     min_traders: float | None = None
     max_traders: float | None = None
     min_pair_age_hours: float | None = None
@@ -152,6 +155,8 @@ class ScreenedToken(BaseModel):
     price_usd: float = 0.0
     liquidity_usd: float = 0.0
     market_cap: float = 0.0
+    # Peak market cap observed while the token is in the 24h index.
+    ath_mcap: float = 0.0
     traders_24h: int = 0
     buys_24h: int = 0
     sells_24h: int = 0
@@ -186,6 +191,8 @@ class WatchScreenFilters(BaseModel):
     max_liq: float | None = None
     min_mcap: float | None = None
     max_mcap: float | None = None
+    # Same as ScreenRequest: require indexed ATH ≥ threshold (Gecko + DS).
+    min_ath_mcap: float | None = None
     min_traders: float | None = None
     max_traders: float | None = None
     min_pair_age_hours: float | None = None
