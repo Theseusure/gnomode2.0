@@ -412,7 +412,7 @@ async def _tokens_traded_7d_one(
                     tokens.add(addr)
                 elif to_h == wallet_l and _is_contract(frm):
                     tokens.add(addr)
-                if enough is not None and len(tokens) >= enough:
+                if enough is not None and too_many is None and len(tokens) >= enough:
                     return len(tokens), False
                 if too_many is not None and len(tokens) > too_many:
                     return len(tokens), False
@@ -432,13 +432,16 @@ async def batch_tokens_traded_7d(
     *,
     enough: int | None = None,
     too_many: int | None = None,
+    lookback_hours: float = 168.0,
 ) -> dict[str, int | None]:
-    """Distinct ERC-20 tokens traded in 30d; paced + bounded retries."""
+    """Distinct ERC-20 tokens traded in ``lookback_hours``; paced + bounded retries."""
     now = time.time()
+    hours = max(float(lookback_hours or 168.0), 1.0)
+    cache_prefix = f"{_TOKENS7D_CACHE_VER}:h{int(hours)}:"
     out: dict[str, int | None] = {}
     misses: list[str] = []
     for w in dict.fromkeys(w.lower() for w in wallets):
-        cached = _tokens7d_cache.get(f"{_TOKENS7D_CACHE_VER}:{w}")
+        cached = _tokens7d_cache.get(f"{cache_prefix}{w}")
         if cached is not None and now - cached[1] < _TOKENS7D_TTL:
             out[w] = cached[0]
         else:
@@ -448,10 +451,11 @@ async def batch_tokens_traded_7d(
     if not misses:
         return out
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     done = 0
     total = len(misses)
     lock = asyncio.Lock()
+    label = f"{hours:g}h"
 
     async def one(wallet: str) -> None:
         nonlocal done
@@ -466,14 +470,14 @@ async def batch_tokens_traded_7d(
                 # Never cache early-exit lower/upper bounds — a later tighter
                 # filter would otherwise reuse an incomplete count.
                 if exact:
-                    _tokens7d_cache[f"{_TOKENS7D_CACHE_VER}:{wallet}"] = (
+                    _tokens7d_cache[f"{cache_prefix}{wallet}"] = (
                         count, time.time()
                     )
                 break
             if attempt + 1 < _MAX_METRIC_ATTEMPTS:
                 logger.warning(
-                    "tokens-7d retry %s/%s for %s in %.1fs",
-                    attempt + 1, _MAX_METRIC_ATTEMPTS, wallet[:12], delay,
+                    "tokens-%s retry %s/%s for %s in %.1fs",
+                    label, attempt + 1, _MAX_METRIC_ATTEMPTS, wallet[:12], delay,
                 )
                 await asyncio.sleep(delay)
                 delay = min(delay * 1.6, 10.0)
@@ -482,14 +486,16 @@ async def batch_tokens_traded_7d(
             if on_progress and (done == total or done % 5 == 0 or done <= 3):
                 await on_progress(
                     "wallets",
-                    f"Tokens 7d {done}/{total} wallets…",
+                    f"Tokens {label} {done}/{total} wallets…",
                     0.9 + 0.08 * done / max(total, 1),
                 )
 
     await asyncio.gather(*[one(w) for w in misses])
     unresolved = sum(1 for w in misses if out.get(w) is None)
     if unresolved:
-        logger.warning("tokens-7d unresolved for %d/%d after retries", unresolved, total)
+        logger.warning(
+            "tokens-%s unresolved for %d/%d after retries", label, unresolved, total
+        )
     _prune_cache(_tokens7d_cache, time.time())
     return out
 
@@ -584,7 +590,7 @@ async def enrich_and_filter_buyers(
         kept = survivors
         await prog("filter", f"Hold time: {before} → {len(kept)} kept", 0.91)
 
-    # 3) Tokens 7d — most expensive per wallet; run on the shortlist only.
+    # 3) Unique tokens in lookback — most expensive; run on the shortlist only.
     if want_t7 and kept:
         before = len(kept)
         enough: int | None = None
@@ -595,12 +601,27 @@ async def enrich_and_filter_buyers(
             enough = max(int(req.min_tokens_traded_7d), 0)
         if req.max_tokens_traded_7d is not None:
             too_many = max(int(req.max_tokens_traded_7d), 0)
-        await prog("filter", f"Tokens 7d: counting for {before} wallets…", 0.92)
+        from .models import tokens_unique_period_hours
+
+        lookback_h = tokens_unique_period_hours(
+            getattr(req, "tokens_unique_period", None)
+        )
+        period_label = getattr(
+            getattr(req, "tokens_unique_period", None),
+            "value",
+            None,
+        ) or f"{lookback_h:g}h"
+        await prog(
+            "filter",
+            f"Tokens {period_label}: counting for {before} wallets…",
+            0.92,
+        )
         tokens_7d = await batch_tokens_traded_7d(
             [b.wallet for b in kept],
             on_progress=on_progress,
             enough=enough,
             too_many=too_many,
+            lookback_hours=lookback_h,
         )
         survivors = []
         unknown = 0

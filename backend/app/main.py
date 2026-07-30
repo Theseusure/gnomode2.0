@@ -244,6 +244,22 @@ async def hvat_enable():
     return apply_hvat_profile(enable=True)
 
 
+@app.put("/api/hvat/filters")
+async def hvat_save_filters(payload: dict):
+    """Save token + wallet filters for Хвать (stored in watch config)."""
+    from .hvat import save_hvat_filters
+
+    try:
+        return save_hvat_filters(
+            screen=payload.get("screen") or {},
+            wallet=payload.get("wallet") or {},
+            max_tokens_per_cycle=payload.get("max_tokens_per_cycle"),
+            sync_followup_mcap=bool(payload.get("sync_followup_mcap", True)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.post("/api/hvat/disable")
 async def hvat_disable():
     from .hvat import apply_hvat_profile

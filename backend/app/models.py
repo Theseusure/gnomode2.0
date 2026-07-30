@@ -15,6 +15,35 @@ class JobStatus(str, Enum):
     error = "error"
 
 
+class TokensUniquePeriod(str, Enum):
+    """Lookback window for distinct ERC-20 token count on a wallet."""
+
+    h12 = "12h"
+    h24 = "24h"
+    d1 = "1d"
+    d3 = "3d"
+    d7 = "7d"
+    d30 = "30d"
+
+
+def tokens_unique_period_hours(period: TokensUniquePeriod | str | None) -> float:
+    """Map period label → hours (1d == 24h)."""
+    key = (
+        (period or TokensUniquePeriod.d7).value
+        if isinstance(period, TokensUniquePeriod)
+        else str(period or "7d")
+    )
+    mapping = {
+        "12h": 12.0,
+        "24h": 24.0,
+        "1d": 24.0,
+        "3d": 72.0,
+        "7d": 168.0,
+        "30d": 720.0,
+    }
+    return mapping.get(key, 168.0)
+
+
 class ParseRequest(BaseModel):
     tokens: list[str] = Field(..., min_length=1)
     mcap_threshold: float | None = None
@@ -26,6 +55,7 @@ class ParseRequest(BaseModel):
     max_hold_time_minutes: float | None = None
     min_tokens_traded_7d: float | None = None
     max_tokens_traded_7d: float | None = None
+    tokens_unique_period: TokensUniquePeriod = TokensUniquePeriod.d7
 
 
 class MigratedToken(BaseModel):
@@ -213,6 +243,7 @@ class WatchWalletFilters(BaseModel):
     max_hold_time_minutes: float | None = None
     min_tokens_traded_7d: float | None = 1.0
     max_tokens_traded_7d: float | None = 1.0
+    tokens_unique_period: TokensUniquePeriod = TokensUniquePeriod.d7
 
 
 class WatchConfig(BaseModel):

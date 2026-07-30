@@ -572,6 +572,7 @@ class WatchRunner:
             max_hold_time_minutes=cfg.wallet.max_hold_time_minutes,
             min_tokens_traded_7d=cfg.wallet.min_tokens_traded_7d,
             max_tokens_traded_7d=cfg.wallet.max_tokens_traded_7d,
+            tokens_unique_period=cfg.wallet.tokens_unique_period,
         )
 
         rpc = RpcClient()
