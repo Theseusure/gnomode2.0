@@ -572,6 +572,7 @@ class WatchRunner:
             max_hold_time_minutes=cfg.wallet.max_hold_time_minutes,
             min_tokens_traded_7d=cfg.wallet.min_tokens_traded_7d,
             max_tokens_traded_7d=cfg.wallet.max_tokens_traded_7d,
+            tokens_unique_period=cfg.wallet.tokens_unique_period,
         )
 
         rpc = RpcClient()
@@ -639,7 +640,7 @@ class WatchRunner:
             self._last_buyers_found = found_total
             self._append_log(
                 "parse",
-                f"{token[:10]}… → {len(buyers)} кош."
+                f"{token[:10]}… → {len(buyers)} кош. (buys=1)"
                 + (f" ({result.error})" if result.error else ""),
                 token=token,
             )
@@ -657,6 +658,21 @@ class WatchRunner:
 
             if not new_buyers:
                 continue
+
+            # Хвать / follow-up: track 1-buy wallets even if Telegram fails.
+            try:
+                from .followup import followup_runner
+
+                ingested = await followup_runner.ingest_from_watch(new_buyers)
+                if ingested:
+                    self._append_log(
+                        "track",
+                        f"Хвать: в follow-up {ingested} кош. по {token[:10]}…",
+                        token=token,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Follow-up ingest failed: %s", exc)
+
             if self._stop_requested:
                 interrupted = True
                 self._last_message = "Остановлено перед отправкой в Telegram"
@@ -670,9 +686,9 @@ class WatchRunner:
             self._append_log("telegram", self._last_message, token=token)
             try:
                 header = (
-                    f"Автопарс · догон · {len(new_buyers)} кош."
+                    f"Хвать · догон · {len(new_buyers)} кош."
                     if catchup
-                    else f"Автопарс · {len(new_buyers)} кош."
+                    else f"Хвать · {len(new_buyers)} кош."
                 )
                 _msgs, sent = await send_buyers(
                     chat, new_buyers, header=header, topic_id=topic_id
@@ -692,12 +708,6 @@ class WatchRunner:
                     seen.add(f"{b.wallet.lower()}:{b.token.lower()}")
                 sent_total += len(sent)
                 new_total += len(sent)
-                try:
-                    from .followup import followup_runner
-
-                    await followup_runner.ingest_from_watch(sent)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Follow-up ingest failed: %s", exc)
             self._last_buyers_sent = sent_total
             self._last_buyers_new = new_total
             partial = len(new_buyers) - len(sent)
